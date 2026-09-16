@@ -230,7 +230,7 @@ def _tablero(df: pd.DataFrame) -> None:
             use_container_width=True)
 
     section("Detalle por tienda", "La tabla del BI, descargable", "table")
-    tabla = t_tienda.copy()
+    tabla = t_tienda.rename(columns={"tienda": "Tienda"}).copy()
     for c in ("Cantidad Pedida", "Cantidad Despachada", "Var"):
         tabla[c] = tabla[c].round(0).astype(int)
     tabla["%Cumplimiento"] = tabla["%Cumplimiento"].round(2)

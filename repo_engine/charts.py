@@ -296,7 +296,8 @@ def cumplimiento_barras(tabla: pd.DataFrame, dim: str, titulo: str = "",
     ch = (alt.Chart(sub)
           .mark_bar(cornerRadius=2)
           .encode(
-              y=alt.Y(f"{dim}:N", sort=list(sub[dim]), title=None),
+              y=alt.Y(f"{dim}:N", sort=list(sub[dim]), title=None,
+                      axis=alt.Axis(labelOverlap=False, labelLimit=150)),
               x=alt.X("%Cumplimiento:Q", title=None,
                       scale=alt.Scale(domain=[0, 100])),
               color=alt.Color("Nivel:N", scale=escala, title=None,
