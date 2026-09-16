@@ -8,11 +8,9 @@ import streamlit as st
 
 from .ui import ASSETS, html, image_data_uri, login_styles
 
-DEFAULT_USERS = {
-    "admin": "forus2026",
-    "hugo.camara@forus.pe": "forus2026",
-    "luis.nunez@forus.pe": "Forus2026*",
-}
+#: No hay usuarios por defecto a proposito. Tener credenciales en el codigo
+#: significa publicarlas: este repositorio es publico y su historial tambien.
+#: Los usuarios viven solo en los secrets, que nunca se suben.
 
 
 def _normalize(value: str) -> str:
@@ -30,7 +28,7 @@ def get_users() -> dict[str, str]:
     user, password = _normalize(cfg.get("username", "")), str(cfg.get("password", ""))
     if user and password:
         return {user: password}
-    return DEFAULT_USERS
+    return {}
 
 
 def require_login() -> bool:
@@ -59,7 +57,7 @@ def require_login() -> bool:
         _brand_strip()
         with st.container(key="login_form_area"):
             with st.form("login_form"):
-                username = st.text_input("Correo electronico", placeholder="hugo.camara@forus.pe")
+                username = st.text_input("Correo electronico", placeholder="nombre.apellido@empresa.com")
                 password = st.text_input("Contrasena", type="password", placeholder="********")
                 submitted = st.form_submit_button("Ingresar", type="primary")
         html('<div class="login-note">Sistema exclusivo para personal autorizado</div>')
@@ -70,6 +68,15 @@ def require_login() -> bool:
         69 tiendas &bull; 15 marcas &bull; Area de Producto
     </div>
     """)
+
+    if not get_users():
+        st.error(
+            "No hay usuarios configurados. Agrega el bloque [app_auth.users] a "
+            "los secrets (en Streamlit Cloud: Settings -> Secrets) con una linea "
+            "por persona. La app no trae usuarios por defecto: tenerlos en el "
+            "codigo seria publicarlos."
+        )
+        return False
 
     if submitted:
         users = get_users()

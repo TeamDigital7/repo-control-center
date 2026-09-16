@@ -33,9 +33,12 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 MAPPING_PATH = DATA_DIR / "bq_mapping.json"
 
 #: Tabla de venta por defecto (la que indico el area).
-TABLA_VENTAS = "forus-analitica-prod-datalake.silver.ft_pe_reporteria_ventas_tablon"
+#: Las rutas de las tablas viven en los secrets, no aca: este repositorio es
+#: publico y un `proyecto.dataset.tabla` describe la infraestructura interna.
+#: Vacio significa "no configurado", y la app lo dice en pantalla.
+TABLA_VENTAS = ""
 #: Maestro de productos, ya usado por el Catalogo Control Center.
-TABLA_ARTI = "forus-analitica-prod-datalake.bronze.stg_pe_central_arti"
+TABLA_ARTI = ""
 
 #: Tope de lectura por consulta. Sobre esto, la app avisa y no ejecuta sola.
 MAX_GB_POR_DEFECTO = 20.0
@@ -149,12 +152,14 @@ def cliente(cfg: dict | None = None) -> Conexion:
 
 def tabla_ventas(cfg: dict | None = None) -> str:
     cfg = config() if cfg is None else cfg
-    return str(cfg.get("ventas_table") or cfg.get("tabla_ventas") or TABLA_VENTAS).strip()
+    tabla = str(cfg.get("ventas_table") or cfg.get("tabla_ventas") or TABLA_VENTAS).strip()
+    return _valida_tabla(tabla, "ventas")
 
 
 def tabla_arti(cfg: dict | None = None) -> str:
     cfg = config() if cfg is None else cfg
-    return str(cfg.get("product_master_table") or cfg.get("table") or TABLA_ARTI).strip()
+    tabla = str(cfg.get("product_master_table") or cfg.get("table") or TABLA_ARTI).strip()
+    return _valida_tabla(tabla, "maestro de productos")
 
 
 # ---------------------------------------------------------------------------
@@ -494,8 +499,8 @@ def a_formato_venta_diaria(df: pd.DataFrame) -> pd.DataFrame:
 # igual que el tablon de ventas. Lo que no se reconozca se corrige una vez en
 # pantalla y queda guardado en `data/bq_mapping.json`.
 
-TABLA_PED_HEADER = "forus-analitica-prod-datalake.bronze.stg_pe_perucentral_pedidos_header"
-TABLA_PED_DETAIL = "forus-analitica-prod-datalake.bronze.stg_pe_perucentral_pedidos_detail"
+TABLA_PED_HEADER = ""
+TABLA_PED_DETAIL = ""
 
 ALIAS_PED_HEADER = {
     "nro_pedido": ["nro_pedido", "nro_ped", "numero_pedido", "num_pedido", "pedido",
@@ -570,19 +575,27 @@ PLACEHOLDERS = {"proyecto", "dataset", "tabla", "proyecto_id", "tu_project_id",
                 "pon_aqui_tu_tabla", "..."}
 
 
+CLAVE_SECRET = {"cabecera": "pedidos_header_table", "detalle": "pedidos_detail_table",
+                "ventas": "ventas_table", "maestro de productos": "product_master_table"}
+
+
 def _valida_tabla(tabla: str, etiqueta: str) -> str:
-    partes = [p.strip() for p in tabla.split(".")]
+    clave = CLAVE_SECRET.get(etiqueta, "la clave correspondiente")
+    if not str(tabla).strip():
+        raise RuntimeError(
+            f"Falta la tabla de {etiqueta} en los secrets. Agrega "
+            f"`{clave} = \"proyecto.dataset.tabla\"` dentro del bloque [bigquery]. "
+            "No hay valor por defecto a proposito: este repositorio es publico y "
+            "las rutas de las tablas no van en el codigo.")
+    partes = [p.strip() for p in str(tabla).split(".")]
     if len(partes) != 3 or not all(partes):
         raise RuntimeError(
             f"La tabla de {etiqueta} tiene que venir como proyecto.dataset.tabla "
-            f"y llego '{tabla}'. Corrigela en los secrets o borra la linea para "
-            "usar la que trae la app por defecto.")
+            f"y llego '{tabla}'. Corrigela en los secrets, en `{clave}`.")
     if any(p.lower() in PLACEHOLDERS for p in partes):
         raise RuntimeError(
             f"La tabla de {etiqueta} quedo con el texto de ejemplo: '{tabla}'. "
-            "Reemplaza el proyecto y el dataset por los de verdad, o borra la "
-            "linea de los secrets para que se use "
-            f"'{TABLA_PED_HEADER if etiqueta == 'cabecera' else TABLA_PED_DETAIL}'.")
+            f"Reemplaza proyecto y dataset por los de verdad en `{clave}`.")
     return tabla
 
 
