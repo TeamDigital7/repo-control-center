@@ -140,9 +140,18 @@ def cliente(cfg: dict | None = None) -> Conexion:
         proyecto = str(cfg.get("project_id", "")).strip()
         credenciales = None
         info = cfg.get("service_account_info")
-        if info:
-            credenciales = service_account.Credentials.from_service_account_info(dict(info))
-            proyecto = proyecto or credenciales.project_id
+        if not info:
+            # Sin credenciales explicitas, la libreria intenta las del entorno y
+            # sale a buscar el servidor de metadatos de Compute Engine, que en
+            # Streamlit no existe. El error que devuelve no menciona los secrets.
+            return Conexion(False,
+                            "Falta el bloque [gcp_service_account] en los secrets. "
+                            "Sin el, la app intenta autenticarse como si corriera "
+                            "dentro de Google Cloud y falla buscando el servidor de "
+                            "metadatos. Pega el JSON de la service account completo, "
+                            "junto al bloque [bigquery].")
+        credenciales = service_account.Credentials.from_service_account_info(dict(info))
+        proyecto = proyecto or credenciales.project_id
         job_proyecto = str(cfg.get("job_project_id", "")).strip() or proyecto
         cli = bigquery.Client(project=job_proyecto or None, credentials=credenciales)
         return Conexion(True, f"Conectado al proyecto {job_proyecto}.", job_proyecto, cli)
@@ -164,6 +173,9 @@ PISTAS_ERROR = (
     ("user does not have", "permiso"),
     ("not found: dataset", "ruta"),
     ("not found: table", "ruta"),
+    ("metadata.google.internal", "sin_cuenta"),
+    ("compute engine metadata", "sin_cuenta"),
+    ("default credentials", "sin_cuenta"),
 )
 
 GUIA_ERROR = {
@@ -188,6 +200,12 @@ GUIA_ERROR = {
     "ruta": (
         "El dataset o la tabla no existen con ese nombre. Revisa la ruta en los "
         "secrets: distingue mayusculas de minusculas."
+    ),
+    "sin_cuenta": (
+        "Falta el bloque [gcp_service_account] en los secrets. Sin credenciales "
+        "explicitas la app intenta autenticarse como si corriera dentro de Google "
+        "Cloud y sale a buscar el servidor de metadatos, que en Streamlit no "
+        "existe. Pega el JSON de la service account completo."
     ),
 }
 
