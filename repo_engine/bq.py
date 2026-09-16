@@ -528,16 +528,40 @@ ALIAS_POR_FUENTE = {
 }
 
 
+#: Textos de la plantilla de secrets. Si llegan tal cual, es que se pego el
+#: ejemplo sin reemplazar: mejor decirlo que dejar que BigQuery devuelva un 400.
+PLACEHOLDERS = {"proyecto", "dataset", "tabla", "proyecto_id", "tu_project_id",
+                "pon_aqui_tu_tabla", "..."}
+
+
+def _valida_tabla(tabla: str, etiqueta: str) -> str:
+    partes = [p.strip() for p in tabla.split(".")]
+    if len(partes) != 3 or not all(partes):
+        raise RuntimeError(
+            f"La tabla de {etiqueta} tiene que venir como proyecto.dataset.tabla "
+            f"y llego '{tabla}'. Corrigela en los secrets o borra la linea para "
+            "usar la que trae la app por defecto.")
+    if any(p.lower() in PLACEHOLDERS for p in partes):
+        raise RuntimeError(
+            f"La tabla de {etiqueta} quedo con el texto de ejemplo: '{tabla}'. "
+            "Reemplaza el proyecto y el dataset por los de verdad, o borra la "
+            "linea de los secrets para que se use "
+            f"'{TABLA_PED_HEADER if etiqueta == 'cabecera' else TABLA_PED_DETAIL}'.")
+    return tabla
+
+
 def tabla_ped_header(cfg: dict | None = None) -> str:
     cfg = config() if cfg is None else cfg
-    return str(cfg.get("pedidos_header_table") or cfg.get("tabla_pedidos_header")
-               or TABLA_PED_HEADER).strip()
+    tabla = str(cfg.get("pedidos_header_table") or cfg.get("tabla_pedidos_header")
+                or TABLA_PED_HEADER).strip()
+    return _valida_tabla(tabla, "cabecera")
 
 
 def tabla_ped_detail(cfg: dict | None = None) -> str:
     cfg = config() if cfg is None else cfg
-    return str(cfg.get("pedidos_detail_table") or cfg.get("tabla_pedidos_detalle")
-               or TABLA_PED_DETAIL).strip()
+    tabla = str(cfg.get("pedidos_detail_table") or cfg.get("tabla_pedidos_detalle")
+                or TABLA_PED_DETAIL).strip()
+    return _valida_tabla(tabla, "detalle")
 
 
 def faltantes_pedidos(mapa: dict, fuente: str) -> list[str]:

@@ -94,7 +94,11 @@ def _editor(conn, tabla: str, fuente: str, mapa: dict) -> dict:
 def panel_tablas(conn):
     """Devuelve (mapa_header, mapa_detail) o (None, None) si falta mapear."""
     cfg = bq.config()
-    t_h, t_d = bq.tabla_ped_header(cfg), bq.tabla_ped_detail(cfg)
+    try:
+        t_h, t_d = bq.tabla_ped_header(cfg), bq.tabla_ped_detail(cfg)
+    except RuntimeError as exc:
+        issue_box("error", "Revisa el nombre de las tablas en los secrets", str(exc))
+        return None, None
     chips([("ok", t_h.split(".")[-1]), ("ok", t_d.split(".")[-1])])
 
     m_h, m_d = _mapa(conn, t_h, "ped_header"), _mapa(conn, t_d, "ped_detail")
