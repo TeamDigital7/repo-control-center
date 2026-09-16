@@ -47,7 +47,7 @@ def _mapa(conn, tabla: str, fuente: str) -> dict | None:
         cols = bq.columnas(conn, tabla)
     except Exception as exc:
         issue_box("error", f"No pude leer el esquema de {tabla.split('.')[-1]}",
-                  f"{type(exc).__name__}: {exc}")
+                  bq.explica_error(exc))
         return None
     if not len(cols):
         _no_existe(conn, tabla)
@@ -182,7 +182,7 @@ def _traer(conn, m_h, m_d, desde, hasta, max_gb):
         issue_box("warn", "Consulta demasiado grande", str(exc))
         return None
     except Exception as exc:
-        issue_box("error", "Fallo la consulta", f"{type(exc).__name__}: {exc}")
+        issue_box("error", "Fallo la consulta", bq.explica_error(exc))
         with st.expander("Detalle tecnico"):
             st.code(traceback.format_exc())
         return None

@@ -59,7 +59,7 @@ def panel_conexion() -> bq.Conexion | None:
             try:
                 cols = bq.columnas(conn, tabla)
             except Exception as exc:
-                issue_box("error", "No pude leer el esquema", f"{type(exc).__name__}: {exc}")
+                issue_box("error", "No pude leer el esquema", bq.explica_error(exc))
                 return None
         st.session_state["bq_cols"] = cols
         mapa = bq.mapear(list(cols["column_name"]))
@@ -183,7 +183,7 @@ def traer_ventas(conn, desde: date, hasta: date, max_gb: float,
         issue_box("warn", "Consulta demasiado grande", str(exc))
         return None
     except Exception as exc:
-        issue_box("error", "Fallo la consulta", f"{type(exc).__name__}: {exc}")
+        issue_box("error", "Fallo la consulta", bq.explica_error(exc))
         with st.expander("Detalle tecnico"):
             st.code(traceback.format_exc())
         return None
