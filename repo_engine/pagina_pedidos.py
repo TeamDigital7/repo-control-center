@@ -157,6 +157,19 @@ def panel_tablas(conn):
         st.caption(f"{len(m_h)} columnas reconocidas en la cabecera y "
                    f"{len(m_d)} en el detalle.")
 
+    if st.button("Volver a detectar el mapeo", key="redetectar",
+                 help="Descarta el mapeo guardado y lo vuelve a deducir de los "
+                      "nombres de columna. Util despues de una mejora del "
+                      "detector o si se guardo uno incompleto."):
+        for t in (t_h, t_d):
+            guardado = bq.cargar_mapeo()
+            guardado.pop(t, None)
+            bq.MAPPING_PATH.write_text(__import__("json").dumps(guardado, indent=1),
+                                       encoding="utf-8")
+        for clave in ("cols_ped_header", "cols_ped_detail"):
+            st.session_state.pop(clave, None)
+        st.rerun()
+
     with st.expander("Mapeo de columnas · cabecera", expanded=bool(falta_h)):
         m_h = _editor(conn, t_h, "ped_header", m_h)
     with st.expander("Mapeo de columnas · detalle", expanded=bool(falta_d)):
@@ -187,11 +200,53 @@ def _traer(conn, m_h, m_d, desde, hasta, max_gb):
             st.code(traceback.format_exc())
         return None
 
+    notas_previas = [f"Cabecera: {len(cab):,} filas · Detalle: {len(det):,} filas."
+                     .replace(",", " ")]
+    if not len(det) or not len(cab):
+        _porque_vacio(conn, m_h, m_d, desde, hasta, len(cab), len(det))
+
     lineas, notas = pedidos.construir(det, cab, load_catalogs())
+    notas = notas_previas + notas
     notas.append(f"Leidos {gb1 + gb2:.2f} GB de BigQuery.")
     st.session_state["ped_lineas"] = lineas
     st.session_state["ped_notas"] = notas
     return lineas
+
+
+def _porque_vacio(conn, m_h, m_d, desde, hasta, n_cab: int, n_det: int) -> None:
+    """Separa las tres causas de un resultado vacio en vez de dejarlas juntas."""
+    cfg = bq.config()
+    for etiqueta, mapa, tabla, filas in (
+            ("cabecera", m_h, bq.tabla_ped_header(cfg), n_cab),
+            ("detalle", m_d, bq.tabla_ped_detail(cfg), n_det)):
+        if filas:
+            continue
+        try:
+            perfil = bq.perfil_tabla(conn, tabla, mapa)
+        except Exception as exc:
+            issue_box("warn", f"La {etiqueta} vino vacia",
+                      f"No pude revisar por que: {bq.explica_error(exc)}")
+            continue
+        if not perfil or not perfil.get("filas"):
+            issue_box("error", f"La tabla de {etiqueta} esta vacia",
+                      f"`{tabla}` no tiene ninguna fila. Revisa que sea la tabla "
+                      "correcta: puede que los datos esten en otra.")
+            continue
+        d, h = perfil.get("desde"), perfil.get("hasta")
+        col = perfil.get("columna_fecha")
+        if d is None or h is None:
+            issue_box("warn", f"La {etiqueta} no trajo filas en el periodo",
+                      f"La tabla tiene {perfil['filas']:,} filas pero la columna de "
+                      f"fecha (`{col}`) esta vacia o no se pudo leer como fecha. "
+                      "Revisa en el mapeo que sea la columna correcta."
+                      .replace(",", " "))
+            continue
+        issue_box("warn", f"La {etiqueta} no tiene datos en ese periodo",
+                  f"`{tabla}` tiene {perfil['filas']:,} filas, con fechas entre "
+                  f"**{d}** y **{h}** segun la columna `{col}`. Tu periodo va del "
+                  f"{desde:%d/%m/%Y} al {hasta:%d/%m/%Y}: ajusta el rango, o "
+                  "revisa en el mapeo si esa es la columna de fecha que "
+                  "corresponde.".replace(",", " "))
 
 
 # ---------------------------------------------------------------------------
