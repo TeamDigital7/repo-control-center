@@ -460,6 +460,7 @@ MODULOS = {
     "repo": ("Tabla de Repo", "Reposicion semanal", "table"),
     "llenado": ("Llenados de Canal", "Reparto de OC", "truck"),
     "efectividad": ("Analisis de Efectividad", "Resultado de traspasos", "chart"),
+    "pedidos": ("Dashboard de Pedidos", "Pedido contra despachado", "package"),
 }
 
 

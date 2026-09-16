@@ -17,7 +17,8 @@ from repo_engine.auth import logout, require_login
 from repo_engine.catalogs import load_catalogs
 from repo_engine.excel_writer import write_workbook
 from repo_engine import (bq, pagina_datos, pagina_efectividad, pagina_inicio,
-                         pagina_llenado, pagina_tallas, sku_directory)
+                         pagina_llenado, pagina_pedidos, pagina_tallas,
+                         sku_directory)
 from repo_engine.readers import detect_source, read_any, read_source
 from repo_engine.transform import build
 from repo_engine.ui import (app_styles, hero, html, issue_box, kpi_row, nav, section,
@@ -89,6 +90,63 @@ def render_venta_bigquery():
     return True
 
 
+def render_pedidos_bigquery():
+    """El Detallado y la Evolucion tambien salen del datalake.
+
+    Son las dos fuentes que alimentan la columna REP: la cabecera aporta el
+    estado del pedido y el detalle las unidades por SKU y tienda.
+    """
+    from repo_engine.readers import LoadResult
+
+    conn = bq.cliente(bq.config())
+    if not conn.ok:
+        issue_box("error", "No se pudo conectar", conn.detalle)
+        return False
+    m_h, m_d = pagina_pedidos.panel_tablas(conn)
+    if m_h is None:
+        return True
+
+    desde, hasta, max_gb = pagina_datos.selector_periodo(
+        "pedidos", "Periodo de pedidos")
+    if st.button("Traer pedidos de BigQuery", type="primary", width="stretch",
+                 key="bq_traer_pedidos"):
+        cfg = bq.config()
+        try:
+            with st.spinner("Consultando BigQuery…"):
+                cab, gb1 = bq.ped_header(conn, m_h, bq.tabla_ped_header(cfg),
+                                         desde, hasta, max_gb)
+                det, gb2 = bq.ped_detail(conn, m_d, bq.tabla_ped_detail(cfg),
+                                         desde, hasta, m_h,
+                                         bq.tabla_ped_header(cfg), max_gb)
+        except RuntimeError as exc:
+            issue_box("warn", "Consulta demasiado grande", str(exc))
+            return True
+        except Exception as exc:
+            issue_box("error", "Fallo la consulta", f"{type(exc).__name__}: {exc}")
+            return True
+
+        periodo = f"del {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}"
+        for source, frame, nota in (
+            (C.SRC_EVOLUCION, bq.a_formato_evolucion(cab),
+             f"Cabecera de pedidos traida de BigQuery {periodo}."),
+            (C.SRC_DETALLADO, bq.a_formato_detallado(det),
+             f"Detalle de pedidos traido de BigQuery {periodo}."),
+        ):
+            res = LoadResult(source=source, df=frame, rows_raw=len(frame),
+                             notes=[nota])
+            res._sig = ("bigquery", desde, hasta)
+            res._filename = f"BigQuery {desde:%d-%m-%Y} a {hasta:%d-%m-%Y}"
+            st.session_state["loaded"][source] = res
+            st.session_state["reports"][source] = validate_source(source, frame)
+        st.session_state["gb_pedidos"] = gb1 + gb2
+        reset_downstream()
+        st.rerun()
+
+    if st.session_state.get("gb_pedidos"):
+        st.caption(f"Ultima consulta: {st.session_state['gb_pedidos']:.2f} GB leidos.")
+    return True
+
+
 def render_uploads():
     section("Carga los archivos fuente", "Se validan al vuelo; si subes uno en la "
             "casilla equivocada la app lo detecta por su estructura", "upload")
@@ -104,8 +162,22 @@ def render_uploads():
         with st.container(border=True):
             render_venta_bigquery()
 
-    fuentes = [s for s in C.SOURCE_ORDER
-               if not (s == C.SRC_VTA and origen == "bigquery")]
+    origen_ped = st.session_state.get("origen_pedidos", "archivo")
+    if bq.disponible():
+        origen_ped = st.radio(
+            "Origen de los pedidos", ["archivo", "bigquery"],
+            format_func=lambda o: ("Subir el Detallado y la Evolucion"
+                                   if o == "archivo"
+                                   else "Traer de BigQuery por rango de fechas"),
+            horizontal=True, key="origen_pedidos", label_visibility="collapsed")
+    if origen_ped == "bigquery":
+        with st.container(border=True):
+            render_pedidos_bigquery()
+
+    desde_bq = {C.SRC_VTA} if origen == "bigquery" else set()
+    if origen_ped == "bigquery":
+        desde_bq |= {C.SRC_DETALLADO, C.SRC_EVOLUCION}
+    fuentes = [s for s in C.SOURCE_ORDER if s not in desde_bq]
     slots = []
     for start in range(0, len(fuentes), 2):
         pair = fuentes[start:start + 2]
@@ -596,6 +668,7 @@ PAGINAS = {
     "inicio": pagina_inicio.render,
     "llenado": pagina_llenado.render,
     "efectividad": pagina_efectividad.render,
+    "pedidos": pagina_pedidos.render,
 }
 
 

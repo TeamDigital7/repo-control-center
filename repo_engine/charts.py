@@ -217,3 +217,93 @@ def histograma_dias(detalle: pd.DataFrame, alto: int = 260, paso: int = 5,
         tooltip=[alt.Tooltip("Tramo:N", title="Dias"),
                  alt.Tooltip("Traspasos:Q", format=",.0f")],
     ), alto)
+
+
+# ---------------------------------------------------------------------------
+# pedidos
+# ---------------------------------------------------------------------------
+
+def _largo(tabla: pd.DataFrame, dim: str) -> pd.DataFrame:
+    """Pedida / despachada en formato largo, que es lo que come Altair."""
+    return tabla.melt(id_vars=[dim],
+                      value_vars=["Cantidad Pedida", "Cantidad Despachada"],
+                      var_name="Medida", value_name="Unidades")
+
+
+ESCALA_PEDIDOS = alt.Scale(domain=["Cantidad Pedida", "Cantidad Despachada"],
+                           range=[AZUL, VERDE])
+
+
+def pedidos_barras(tabla: pd.DataFrame, dim: str, titulo: str = "",
+                   top: int = 12, alto: int = 320) -> alt.Chart:
+    """Pedida vs despachada por dimension, barras agrupadas horizontales."""
+    sub = tabla.head(top)
+    orden = list(sub[dim])
+    ch = (alt.Chart(_largo(sub, dim))
+          .mark_bar(cornerRadius=2)
+          .encode(
+              y=alt.Y(f"{dim}:N", sort=orden, title=None),
+              x=alt.X("Unidades:Q", title=None, axis=alt.Axis(format="~s")),
+              yOffset=alt.YOffset("Medida:N"),
+              color=alt.Color("Medida:N", scale=ESCALA_PEDIDOS, title=None),
+              tooltip=[alt.Tooltip(f"{dim}:N"), "Medida:N",
+                       alt.Tooltip("Unidades:Q", format=",.0f")])
+          .properties(title=titulo))
+    return _tema(ch, alto)
+
+
+def pedidos_columnas(tabla: pd.DataFrame, dim: str, titulo: str = "",
+                     alto: int = 260) -> alt.Chart:
+    """La misma comparacion en vertical, para cadenas y periodos."""
+    orden = list(tabla[dim])
+    ch = (alt.Chart(_largo(tabla, dim))
+          .mark_bar(cornerRadius=2)
+          .encode(
+              x=alt.X(f"{dim}:N", sort=orden, title=None,
+                      axis=alt.Axis(labelAngle=0, labelLimit=90)),
+              y=alt.Y("Unidades:Q", title=None, axis=alt.Axis(format="~s")),
+              xOffset=alt.XOffset("Medida:N"),
+              color=alt.Color("Medida:N", scale=ESCALA_PEDIDOS, title=None),
+              tooltip=[alt.Tooltip(f"{dim}:N"), "Medida:N",
+                       alt.Tooltip("Unidades:Q", format=",.0f")])
+          .properties(title=titulo))
+    return _tema(ch, alto)
+
+
+def pedidos_evolucion(tabla: pd.DataFrame, titulo: str = "", alto: int = 280) -> alt.Chart:
+    """Serie de pedida vs despachada en el tiempo (area suave, como el BI)."""
+    ch = (alt.Chart(_largo(tabla, "periodo"))
+          .mark_area(opacity=0.35, line={"strokeWidth": 2})
+          .encode(
+              x=alt.X("periodo:N", title=None, axis=alt.Axis(labelAngle=0)),
+              y=alt.Y("Unidades:Q", stack=None, title=None,
+                      axis=alt.Axis(format="~s")),
+              color=alt.Color("Medida:N", scale=ESCALA_PEDIDOS, title=None),
+              tooltip=["periodo:N", "Medida:N",
+                       alt.Tooltip("Unidades:Q", format=",.0f")])
+          .properties(title=titulo))
+    return _tema(ch, alto)
+
+
+def cumplimiento_barras(tabla: pd.DataFrame, dim: str, titulo: str = "",
+                        top: int = 12, alto: int = 320) -> alt.Chart:
+    """% de cumplimiento por dimension, con el color contando la historia."""
+    sub = tabla.head(top).copy()
+    # El umbral se resuelve en pandas: anidar alt.condition no es valido en Vega.
+    sub["Nivel"] = pd.cut(sub["%Cumplimiento"], [-0.01, 85, 95, 100.01],
+                          labels=["Bajo", "Medio", "Alto"])
+    escala = alt.Scale(domain=["Alto", "Medio", "Bajo"], range=[VERDE, AMBAR, ROJO])
+    ch = (alt.Chart(sub)
+          .mark_bar(cornerRadius=2)
+          .encode(
+              y=alt.Y(f"{dim}:N", sort=list(sub[dim]), title=None),
+              x=alt.X("%Cumplimiento:Q", title=None,
+                      scale=alt.Scale(domain=[0, 100])),
+              color=alt.Color("Nivel:N", scale=escala, title=None,
+                              legend=alt.Legend(orient="bottom")),
+              tooltip=[alt.Tooltip(f"{dim}:N"),
+                       alt.Tooltip("%Cumplimiento:Q", format=".2f"),
+                       alt.Tooltip("Cantidad Pedida:Q", format=",.0f"),
+                       alt.Tooltip("Cantidad Despachada:Q", format=",.0f")])
+          .properties(title=titulo))
+    return _tema(ch, alto)
