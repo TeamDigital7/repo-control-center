@@ -326,6 +326,28 @@ def columnas(conn: Conexion, tabla: str) -> pd.DataFrame:
     return conn.cliente.query(sql, job_config=cfg).to_dataframe()
 
 
+def perfil_tabla(conn: Conexion, tabla: str, mapa: dict) -> dict:
+    """Cuantas filas tiene y entre que fechas, para explicar un resultado vacio.
+
+    Cuando una consulta acotada por periodo devuelve cero filas, la duda es si
+    la tabla esta vacia, si el rango no cae donde hay datos, o si la columna de
+    fecha mapeada no es la correcta. Esto las separa en una sola consulta.
+    """
+    if "fecha" not in mapa:
+        sql = f"SELECT COUNT(*) AS filas, NULL AS desde, NULL AS hasta FROM `{tabla}`"
+    else:
+        col = mapa["fecha"]
+        sql = (f"SELECT COUNT(*) AS filas, MIN(DATE(`{col}`)) AS desde, "
+               f"MAX(DATE(`{col}`)) AS hasta FROM `{tabla}`")
+    df = conn.cliente.query(sql).to_dataframe()
+    if not len(df):
+        return {}
+    fila = df.iloc[0]
+    return {"filas": int(fila["filas"]),
+            "desde": fila.get("desde"), "hasta": fila.get("hasta"),
+            "columna_fecha": mapa.get("fecha")}
+
+
 def buscar_tablas(conn: Conexion, tabla: str, patron: str = "pedido") -> pd.DataFrame:
     """Donde vive realmente una tabla que no aparecio donde se la busco.
 
