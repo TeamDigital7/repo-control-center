@@ -188,3 +188,34 @@ nombre —primero en el dataset indicado y despues por region— y las lista con
 nombre completo, listo para copiar a `pedidos_header_table` y
 `pedidos_detail_table`. Las dos consultas son a `INFORMATION_SCHEMA`: gratis y
 sin tocar los datos.
+
+### Errores de credenciales
+
+La app traduce los fallos mas comunes a algo accionable, y deja el error
+original debajo por si hace falta.
+
+| Lo que dice Google | Que pasa | Que hacer |
+|---|---|---|
+| `invalid_grant: Invalid JWT Signature` | La llave privada no valida contra su correo | Revisar `private_key` en los secrets (ver abajo), que `client_email` sea de la misma cuenta, y que la llave no este rotada o borrada en GCP |
+| `Could not deserialize key data` | La llave no se pudo leer | Pegarla completa, con las lineas BEGIN y END |
+| `403 Access Denied` | Autentico bien, sin permiso | `roles/bigquery.dataViewer` sobre el dataset y `roles/bigquery.jobUser` sobre el proyecto de los jobs |
+| `404 Not found: Dataset / Table` | La ruta no existe | Corregir la ruta en los secrets; distingue mayusculas |
+
+La `private_key` es la que mas se rompe al copiar. En TOML va en **una sola
+linea**, entre comillas dobles, con los saltos como los dos caracteres `\n` y
+no como saltos de linea reales:
+
+```toml
+[gcp_service_account]
+client_email = "cuenta@proyecto.iam.gserviceaccount.com"
+private_key = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg...\n-----END PRIVATE KEY-----\n"
+```
+
+La alternativa es comillas triples con saltos reales, pero si se mezclan las dos
+formas —comillas dobles y saltos reales— la firma no valida y sale
+`Invalid JWT Signature`.
+
+Un detalle de diagnostico: crear el cliente **no** autentica. La autenticacion
+ocurre en la primera consulta, asi que un problema de credenciales aparece al
+leer el esquema, no al conectar. Por eso el panel puede decir "conectado" y
+fallar un segundo despues.

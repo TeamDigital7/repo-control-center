@@ -150,6 +150,58 @@ def cliente(cfg: dict | None = None) -> Conexion:
         return Conexion(False, f"{type(exc).__name__}: {exc}")
 
 
+#: Fallos de credenciales que se ven igual desde arriba pero se arreglan
+#: distinto. El texto de Google es correcto pero no dice donde mirar.
+PISTAS_ERROR = (
+    ("invalid_jwt signature", "firma"),
+    ("invalid jwt signature", "firma"),
+    ("invalid_grant", "firma"),
+    ("could not deserialize key", "formato"),
+    ("no key could be detected", "formato"),
+    ("incorrect padding", "formato"),
+    ("access denied", "permiso"),
+    ("permission denied", "permiso"),
+    ("user does not have", "permiso"),
+    ("not found: dataset", "ruta"),
+    ("not found: table", "ruta"),
+)
+
+GUIA_ERROR = {
+    "firma": (
+        "La llave privada de la service account no valida contra su correo. "
+        "Casi siempre es la `private_key` mal pegada en los secrets: tiene que "
+        "ir en UNA linea, entre comillas dobles, con los saltos como los dos "
+        "caracteres \\n y no como saltos de linea reales. Revisa tambien que "
+        "`client_email` y `private_key` sean de la MISMA cuenta, y que la llave "
+        "no haya sido rotada o borrada en GCP."
+    ),
+    "formato": (
+        "La `private_key` no se pudo leer. Pegala completa, incluyendo las "
+        "lineas BEGIN y END, en una sola linea entre comillas dobles y con los "
+        "saltos como \\n."
+    ),
+    "permiso": (
+        "La service account se autentico bien pero no tiene permiso sobre ese "
+        "dataset. Pide `roles/bigquery.dataViewer` sobre el dataset y "
+        "`roles/bigquery.jobUser` sobre el proyecto donde corren los jobs."
+    ),
+    "ruta": (
+        "El dataset o la tabla no existen con ese nombre. Revisa la ruta en los "
+        "secrets: distingue mayusculas de minusculas."
+    ),
+}
+
+
+def explica_error(exc: Exception) -> str:
+    """Traduce el error de Google a algo accionable, sin ocultar el original."""
+    crudo = f"{type(exc).__name__}: {exc}"
+    texto = str(exc).lower()
+    for aguja, clave in PISTAS_ERROR:
+        if aguja in texto:
+            return f"{GUIA_ERROR[clave]}\n\nError original: {crudo}"
+    return crudo
+
+
 def tabla_ventas(cfg: dict | None = None) -> str:
     cfg = config() if cfg is None else cfg
     tabla = str(cfg.get("ventas_table") or cfg.get("tabla_ventas") or TABLA_VENTAS).strip()
