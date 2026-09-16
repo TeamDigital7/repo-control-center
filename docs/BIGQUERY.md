@@ -29,9 +29,18 @@ Los nombres por defecto se pueden cambiar en los secrets sin tocar codigo:
 
 ```toml
 [bigquery]
-pedidos_header_table = "proyecto.dataset.tabla"
-pedidos_detail_table = "proyecto.dataset.tabla"
+pedidos_header_table = "otro-proyecto.otro_dataset.mi_tabla_header"
+pedidos_detail_table = "otro-proyecto.otro_dataset.mi_tabla_detail"
 ```
+
+Dos avisos que ahorran un rato de depuracion:
+
+- **No repitas el encabezado `[bigquery]`.** Las lineas van dentro del bloque
+  que ya existe; TOML rechaza la clave duplicada y la app se queda sin conexion.
+- **Si no hacen falta, no las pongas.** Dejarlas con el texto de ejemplo
+  (`PROYECTO.DATASET....`) hace que BigQuery responda *Invalid project ID*. La
+  app detecta ese caso y lo dice en pantalla, pero lo correcto es borrar las dos
+  lineas y quedarse con los nombres por defecto.
 
 ---
 
