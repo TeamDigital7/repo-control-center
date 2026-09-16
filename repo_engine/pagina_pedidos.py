@@ -8,12 +8,12 @@ fechas; filtrar despues ocurre en memoria y no vuelve a cobrar en BigQuery.
 from __future__ import annotations
 
 import traceback
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import streamlit as st
 
-from . import bq, charts, pedidos
+from . import bq, charts, pedidos, pedidos_excel
 from .catalogs import load_catalogs
 from .ui import chips, hero, issue_box, kpi_row, section
 
@@ -231,8 +231,66 @@ def _tablero(df: pd.DataFrame) -> None:
         tabla[c] = tabla[c].round(0).astype(int)
     tabla["%Cumplimiento"] = tabla["%Cumplimiento"].round(2)
     st.dataframe(tabla, width="stretch", hide_index=True)
-    st.download_button("Descargar (.csv)", tabla.to_csv(index=False).encode("utf-8"),
-                       "pedidos_por_tienda.csv", "text/csv", width="stretch")
+
+    _descargas(df)
+
+
+VISTAS_CSV = {
+    "Por tienda": "tienda",
+    "Por cadena": "cadena",
+    "Por marca": "marca",
+    "Por clasificacion": "tipo_pedido",
+    "Por estado": "estado",
+    "Por tipo de prenda": "tipo_prenda",
+    "Por ciudad": "ciudad",
+}
+
+
+def _descargas(df: pd.DataFrame) -> None:
+    """Lo que se baja es lo que esta en pantalla: si hay filtros, van aplicados."""
+    section("Descargar", "Se exporta con los filtros que tengas puestos", "download")
+    sello = datetime.now().strftime("%Y-%m-%d_%H%M")
+
+    izq, der = st.columns([2, 1])
+    with izq:
+        st.caption("**Libro completo** · resumen, una hoja por vista, la matriz "
+                   "tipo x estado, la evolucion y el detalle linea a linea.")
+        try:
+            libro = pedidos_excel.construir(
+                df, {"periodo": _periodo_texto(),
+                     "notas": st.session_state.get("ped_notas", [])})
+        except Exception as exc:                      # nunca tumbar el tablero
+            issue_box("warn", "No se pudo armar el Excel",
+                      f"{type(exc).__name__}: {exc}. Usa las descargas en CSV.")
+        else:
+            st.download_button(
+                f"Descargar Excel ({len(libro) / 1e6:.1f} MB)", libro,
+                f"dashboard_pedidos_{sello}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch", type="primary", key="ped_xlsx")
+    with der:
+        st.caption("**Una vista en CSV**")
+        vista = st.selectbox("Vista", list(VISTAS_CSV) + ["Lineas (detalle)"],
+                             key="ped_vista_csv", label_visibility="collapsed")
+        if vista == "Lineas (detalle)":
+            datos, nombre = df, "lineas"
+        else:
+            campo = VISTAS_CSV[vista]
+            datos = pedidos.por(df, campo)
+            nombre = campo
+        st.download_button(
+            f"Descargar CSV ({len(datos):,} filas)".replace(",", " "),
+            datos.to_csv(index=False).encode("utf-8-sig"),
+            f"pedidos_{nombre}_{sello}.csv", "text/csv",
+            width="stretch", key="ped_csv")
+
+
+def _periodo_texto() -> str:
+    desde = st.session_state.get("ped_desde")
+    hasta = st.session_state.get("ped_hasta")
+    if desde and hasta:
+        return f"Del {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}"
+    return f"Generado el {datetime.now():%d/%m/%Y %H:%M}"
 
 
 # ---------------------------------------------------------------------------
