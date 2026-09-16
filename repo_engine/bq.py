@@ -94,15 +94,54 @@ class Conexion:
 # configuracion y cliente
 # ---------------------------------------------------------------------------
 
+#: Donde puede estar el JSON de la service account. El bloque de siempre es
+#: [gcp_service_account] al nivel de arriba, pero es facil que termine anidado
+#: dentro de [bigquery] al pegar, o con el nombre de otra convencion.
+UBICACIONES_CUENTA = (
+    ("gcp_service_account",),
+    ("bigquery", "gcp_service_account"),
+    ("connections", "gcp_service_account"),
+    ("gcp",),
+    ("service_account",),
+    ("google_service_account",),
+)
+
+#: Campos sin los cuales el JSON no sirve para firmar.
+CAMPOS_CUENTA = ("client_email", "private_key")
+
+
+def _busca_cuenta(secrets) -> dict | None:
+    """Encuentra el JSON de la service account este donde este."""
+    for ruta in UBICACIONES_CUENTA:
+        nodo = secrets
+        try:
+            for paso in ruta:
+                if paso not in nodo:
+                    nodo = None
+                    break
+                nodo = nodo[paso]
+            if nodo is None:
+                continue
+            candidato = dict(nodo)
+        except Exception:
+            continue
+        if all(c in candidato for c in CAMPOS_CUENTA):
+            return candidato
+    return None
+
+
 def config() -> dict:
     """Lee los secrets. Misma estructura que el Catalogo Control Center."""
     import streamlit as st
     cfg: dict = {}
     try:
         if "bigquery" in st.secrets:
-            cfg.update(dict(st.secrets["bigquery"]))
-        if "gcp_service_account" in st.secrets:
-            cfg["service_account_info"] = dict(st.secrets["gcp_service_account"])
+            # La cuenta puede venir anidada aca; no debe contaminar la config.
+            cfg.update({k: v for k, v in dict(st.secrets["bigquery"]).items()
+                        if k not in ("gcp_service_account", "service_account")})
+        cuenta = _busca_cuenta(st.secrets)
+        if cuenta:
+            cfg["service_account_info"] = cuenta
     except Exception:
         return {}
     crudo = cfg.pop("service_account_json", None)
@@ -112,6 +151,39 @@ def config() -> dict:
         except json.JSONDecodeError:
             pass
     return cfg
+
+
+def diagnostico_secrets() -> list[str]:
+    """Que bloques y claves ve la app. Solo NOMBRES: ningun valor se muestra."""
+    import streamlit as st
+    lineas: list[str] = []
+    try:
+        bloques = sorted(str(k) for k in st.secrets.keys())
+    except Exception as exc:
+        return [f"No se pudieron leer los secrets: {type(exc).__name__}: {exc}"]
+    lineas.append("Bloques encontrados: " + (", ".join(bloques) or "ninguno"))
+    try:
+        if "bigquery" in st.secrets:
+            claves = sorted(str(k) for k in dict(st.secrets["bigquery"]).keys())
+            lineas.append("Claves dentro de [bigquery]: " + (", ".join(claves) or "ninguna"))
+    except Exception:
+        pass
+    cuenta = None
+    try:
+        cuenta = _busca_cuenta(st.secrets)
+    except Exception:
+        pass
+    if cuenta:
+        faltan = [c for c in CAMPOS_CUENTA if not str(cuenta.get(c, "")).strip()]
+        lineas.append("Service account: encontrada" +
+                      (f", pero sin {', '.join(faltan)}" if faltan else
+                       f" ({len(cuenta)} campos, client_email y private_key presentes)"))
+    else:
+        lineas.append(
+            "Service account: NO encontrada. Se busco como [gcp_service_account], "
+            "dentro de [bigquery], y bajo [connections]. Tiene que traer al menos "
+            "client_email y private_key.")
+    return lineas
 
 
 def disponible(cfg: dict | None = None) -> bool:
@@ -290,17 +362,60 @@ def buscar_tablas(conn: Conexion, tabla: str, patron: str = "pedido") -> pd.Data
     return pd.DataFrame(columns=["table_schema", "table_name"])
 
 
+def _normaliza(texto: str) -> str:
+    """`Nro. Pedido`, `NRO_PEDIDO` y `nroPedido` colapsan al mismo texto."""
+    import unicodedata
+    plano = unicodedata.normalize("NFKD", str(texto))
+    plano = "".join(c for c in plano if not unicodedata.combining(c))
+    return "".join(c for c in plano.lower() if c.isalnum())
+
+
+def _puntaje(alias_norm: str, col_norm: str) -> int:
+    """Cuanto se parecen. 0 significa que no se parecen en nada."""
+    if not alias_norm or not col_norm:
+        return 0
+    if alias_norm == col_norm:
+        return 100
+    if col_norm.startswith(alias_norm) or col_norm.endswith(alias_norm):
+        return 85
+    if alias_norm in col_norm:
+        return 70
+    if col_norm in alias_norm and len(col_norm) >= 4:
+        return 60
+    return 0
+
+
 def mapear(cols: list[str], alias: dict | None = None) -> dict[str, str]:
-    """Empareja cada campo logico con la primera columna real que coincida."""
+    """Empareja cada campo logico con la columna real que mas se le parezca.
+
+    El emparejamiento exacto no alcanza contra tablas de staging: los mismos
+    datos llegan como `NRO_PEDIDO`, `nro.pedido` o `nroPedido` segun el origen.
+    Se compara sobre el texto normalizado y se resuelve por puntaje, asignando
+    primero las coincidencias mas fuertes para que una columna no quede tomada
+    por un campo que la necesitaba menos.
+    """
     alias = alias or ALIAS_VENTAS
-    disponibles = {str(c).strip().lower(): str(c) for c in cols}
-    salida: dict[str, str] = {}
+    columnas = [str(c) for c in cols]
+    norm_col = {c: _normaliza(c) for c in columnas}
+
+    candidatos = []
     for campo, nombres in alias.items():
         for n in nombres:
-            hit = disponibles.get(n.lower())
-            if hit:
-                salida[campo] = hit
-                break
+            an = _normaliza(n)
+            for c in columnas:
+                p = _puntaje(an, norm_col[c])
+                if p:
+                    # A igual puntaje gana el alias declarado antes.
+                    candidatos.append((p, -nombres.index(n), campo, c))
+
+    candidatos.sort(reverse=True)
+    salida: dict[str, str] = {}
+    usadas: set[str] = set()
+    for _p, _orden, campo, col in candidatos:
+        if campo in salida or col in usadas:
+            continue
+        salida[campo] = col
+        usadas.add(col)
     return salida
 
 
@@ -573,40 +688,46 @@ TABLA_PED_HEADER = ""
 TABLA_PED_DETAIL = ""
 
 ALIAS_PED_HEADER = {
-    "nro_pedido": ["nro_pedido", "nro_ped", "numero_pedido", "num_pedido", "pedido",
-                   "id_pedido", "orden", "nro_orden", "numped", "cod_pedido"],
-    "fecha": ["fecha_pedido", "fecha", "fec_pedido", "fecha_emision", "fec_emision",
-              "fecha_aprobacion", "fecha_registro", "fec_doc", "fecha_documento"],
-    "estado": ["estado", "estado_pedido", "desc_estado", "situacion", "status",
-               "estado_desc", "nom_estado"],
-    "tipo_pedido": ["tipo_pedido", "tipo_ped", "clasificacion", "clasificacion_pedido",
-                    "desc_tipo_pedido", "motivo", "tipo", "tipo_documento"],
+    "nro_pedido": ["nro_pedido", "nro_ped", "num_pedido", "numero_pedido", "cod_pedido",
+                   "id_pedido", "numped", "nro_orden", "orden", "pedido"],
+    "fecha": ["fec_pedido", "fecha_pedido", "fec_emision", "fecha_emision",
+              "fec_doc", "fecha_documento", "fecha_aprobacion", "fecha_registro",
+              "fecha"],
+    "estado": ["des_estado", "desc_estado", "nom_estado", "estado_pedido",
+               "estado_desc", "estado", "situacion", "status"],
+    "tipo_pedido": ["tip_pedido", "tipo_pedido", "des_tipo_pedido", "desc_tipo_pedido",
+                    "tip_ped", "tipo_ped", "clasificacion", "clasificacion_pedido",
+                    "motivo", "tipo_documento", "tipo"],
     "canal": ["canal", "canal_venta", "desc_canal", "tipo_canal"],
     "bodega_origen": ["bodega_origen", "origen", "cod_bodega_origen", "almacen_origen",
                       "bodega", "cod_bodega"],
     "destino": ["destino", "bodega_destino", "almacen_destino", "tienda_destino",
                 "nombre_destino", "desc_destino"],
-    "tienda_cod": ["cod_tienda", "tienda_cod", "codigo_tienda", "cod_local",
-                   "cod_destino", "local", "cod_loc"],
-    "tienda_nombre": ["nombre_tienda", "tienda_nombre", "tienda", "nombre_loc",
-                      "desc_tienda", "nom_tienda", "nombre_local"],
-    "ciudad": ["ciudad", "desc_ciudad", "nom_ciudad", "departamento", "provincia",
-               "region", "zona"],
-    "cadena": ["cadena", "tipo_cadena", "desc_cadena", "marca_cadena", "nom_cadena"],
-    "unid_pedidas": ["unid_pedidas", "cant_pedida", "cantidad_pedida", "und_pedidas",
-                     "qty_pedida", "total_pedido"],
-    "unid_despachadas": ["unid_despachadas", "cant_despachada", "cantidad_despachada",
-                         "und_despachadas", "qty_despachada", "total_despachado"],
-    "unid_pendientes": ["unid_pendientes", "cant_pendiente", "cantidad_pendiente",
-                        "und_pendientes", "qty_pendiente", "saldo"],
+    "tienda_cod": ["cod_local", "cod_tienda", "codigo_tienda", "cod_loc",
+                   "tienda_cod", "cod_destino", "id_local"],
+    "tienda_nombre": ["nom_local", "des_local", "nombre_local", "nombre_tienda",
+                      "nom_tienda", "des_tienda", "desc_tienda", "tienda_nombre",
+                      "nombre_loc", "tienda"],
+    "ciudad": ["des_ciudad", "nom_ciudad", "desc_ciudad", "ciudad", "departamento",
+               "provincia", "region", "zona"],
+    "cadena": ["des_cadena", "nom_cadena", "tip_cadena", "tipo_cadena", "cadena",
+               "marca_cadena"],
+    "unid_pedidas": ["cant_pedida", "cant_ped", "unid_pedidas", "cantidad_pedida",
+                     "und_pedidas", "qty_pedida", "total_pedido"],
+    "unid_despachadas": ["cant_despachada", "cant_desp", "unid_despachadas",
+                         "cantidad_despachada", "und_despachadas", "qty_despachada",
+                         "total_despachado"],
+    "unid_pendientes": ["cant_pendiente", "cant_pend", "unid_pendientes",
+                        "cantidad_pendiente", "und_pendientes", "qty_pendiente", "saldo"],
 }
 
 ALIAS_PED_DETAIL = {
-    "nro_pedido": ["nro_pedido", "nro_ped", "numero_pedido", "num_pedido", "pedido",
-                   "id_pedido", "orden", "nro_orden", "numped", "cod_pedido"],
-    "fecha": ["fecha_pedido", "fecha", "fec_pedido", "fecha_emision", "fec_doc"],
-    "tienda_cod": ["cod_tienda", "tienda_cod", "codigo_tienda", "cod_local",
-                   "cod_destino", "local", "cod_loc"],
+    "nro_pedido": ["nro_pedido", "nro_ped", "num_pedido", "numero_pedido", "cod_pedido",
+                   "id_pedido", "numped", "nro_orden", "orden", "pedido"],
+    "fecha": ["fec_pedido", "fecha_pedido", "fec_emision", "fecha_emision",
+              "fec_doc", "fecha"],
+    "tienda_cod": ["cod_local", "cod_tienda", "codigo_tienda", "cod_loc",
+                   "tienda_cod", "cod_destino", "id_local"],
     "tienda_nombre": ["nombre_tienda", "tienda_nombre", "tienda", "nombre_loc",
                       "tienda_cliente", "cliente", "desc_tienda"],
     "id_producto": ["id_producto", "codint_ma", "codint", "sku", "idproducto"],
@@ -616,16 +737,17 @@ ALIAS_PED_DETAIL = {
     "color": ["color", "desc_color", "nom_color"],
     "talla": ["talla", "talnum_ma", "talla_numero", "talla_nro", "size", "cod_talla"],
     "barra": ["barra", "codbar_ma", "codigo_barra", "cod_barras", "ean", "gtin"],
-    "marca": ["marca", "desc_marca", "nom_marca"],
+    "marca": ["des_marca", "nom_marca", "desc_marca", "marca"],
     "clase": ["clase", "desc_clase", "linea_negocio"],
-    "tipo_prenda": ["tipo_prenda", "desc_tipo_prenda", "categoria", "familia",
-                    "subfamilia", "tipo_producto"],
-    "unid_pedidas": ["unid_pedidas", "cant_pedida", "cantidad_pedida", "und_pedidas",
-                     "qty_pedida", "cantidad"],
-    "unid_despachadas": ["unid_despachadas", "cant_despachada", "cantidad_despachada",
-                         "und_despachadas", "qty_despachada", "cantidad_atendida"],
-    "unid_pendientes": ["unid_pendientes", "cant_pendiente", "cantidad_pendiente",
-                        "und_pendientes", "qty_pendiente", "saldo"],
+    "tipo_prenda": ["des_tipo_prenda", "tipo_prenda", "desc_tipo_prenda", "des_familia",
+                    "familia", "subfamilia", "categoria", "tipo_producto"],
+    "unid_pedidas": ["cant_pedida", "cant_ped", "unid_pedidas", "cantidad_pedida",
+                     "und_pedidas", "qty_pedida", "cantidad"],
+    "unid_despachadas": ["cant_despachada", "cant_desp", "unid_despachadas",
+                         "cantidad_despachada", "und_despachadas", "qty_despachada",
+                         "cantidad_atendida"],
+    "unid_pendientes": ["cant_pendiente", "cant_pend", "unid_pendientes",
+                        "cantidad_pendiente", "und_pendientes", "qty_pendiente", "saldo"],
 }
 
 #: Lo minimo para que el cruce y la columna REP funcionen.
