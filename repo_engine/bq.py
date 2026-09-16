@@ -370,6 +370,35 @@ def _normaliza(texto: str) -> str:
     return "".join(c for c in plano.lower() if c.isalnum())
 
 
+def _sufijo_comun(columnas: list[str]) -> str:
+    """Sufijo de tabla que llevan TODAS las columnas, si lo hay.
+
+    Las tablas de staging suelen marcar su origen en cada columna
+    (`nroped_ph`, `codloc_ph`, ...). Ese sufijo es ruido para el
+    emparejamiento, pero solo se puede quitar si lo llevan todas: si una
+    columna no lo tiene, no es un sufijo de tabla y podria ser parte del
+    nombre real.
+    """
+    candidatos = set()
+    for c in columnas:
+        if "_" in c:
+            cola = c.rsplit("_", 1)[1]
+            if 1 <= len(cola) <= 3 and cola.isalpha():
+                candidatos.add(cola.lower())
+    if len(candidatos) != 1:
+        return ""
+    sufijo = candidatos.pop()
+    if all(str(c).lower().endswith("_" + sufijo) for c in columnas):
+        return sufijo
+    return ""
+
+
+def _sin_sufijo(columna: str, sufijo: str) -> str:
+    if sufijo and str(columna).lower().endswith("_" + sufijo):
+        return str(columna)[: -(len(sufijo) + 1)]
+    return str(columna)
+
+
 def _puntaje(alias_norm: str, col_norm: str) -> int:
     """Cuanto se parecen. 0 significa que no se parecen en nada."""
     if not alias_norm or not col_norm:
@@ -396,7 +425,8 @@ def mapear(cols: list[str], alias: dict | None = None) -> dict[str, str]:
     """
     alias = alias or ALIAS_VENTAS
     columnas = [str(c) for c in cols]
-    norm_col = {c: _normaliza(c) for c in columnas}
+    sufijo = _sufijo_comun(columnas)
+    norm_col = {c: _normaliza(_sin_sufijo(c, sufijo)) for c in columnas}
 
     candidatos = []
     for campo, nombres in alias.items():
@@ -688,65 +718,65 @@ TABLA_PED_HEADER = ""
 TABLA_PED_DETAIL = ""
 
 ALIAS_PED_HEADER = {
-    "nro_pedido": ["nro_pedido", "nro_ped", "num_pedido", "numero_pedido", "cod_pedido",
+    "nro_pedido": ["nroped", "nro_pedido", "nro_ped", "num_pedido", "numero_pedido", "cod_pedido",
                    "id_pedido", "numped", "nro_orden", "orden", "pedido"],
-    "fecha": ["fec_pedido", "fecha_pedido", "fec_emision", "fecha_emision",
+    "fecha": ["fecdoc", "fecped", "fec_pedido", "fecha_pedido", "fec_emision", "fecha_emision",
               "fec_doc", "fecha_documento", "fecha_aprobacion", "fecha_registro",
               "fecha"],
-    "estado": ["des_estado", "desc_estado", "nom_estado", "estado_pedido",
+    "estado": ["estado", "desest", "des_estado", "desc_estado", "nom_estado", "estado_pedido",
                "estado_desc", "estado", "situacion", "status"],
-    "tipo_pedido": ["tip_pedido", "tipo_pedido", "des_tipo_pedido", "desc_tipo_pedido",
+    "tipo_pedido": ["clasificacion", "tipped", "tip_pedido", "tipo_pedido", "des_tipo_pedido", "desc_tipo_pedido",
                     "tip_ped", "tipo_ped", "clasificacion", "clasificacion_pedido",
                     "motivo", "tipo_documento", "tipo"],
-    "canal": ["canal", "canal_venta", "desc_canal", "tipo_canal"],
-    "bodega_origen": ["bodega_origen", "origen", "cod_bodega_origen", "almacen_origen",
+    "canal": ["canal", "codcan", "canal_venta", "desc_canal", "tipo_canal"],
+    "bodega_origen": ["origen", "codori", "bodega_origen", "cod_bodega_origen", "almacen_origen",
                       "bodega", "cod_bodega"],
-    "destino": ["destino", "bodega_destino", "almacen_destino", "tienda_destino",
+    "destino": ["destinatario", "coddes", "destino", "bodega_destino", "almacen_destino", "tienda_destino",
                 "nombre_destino", "desc_destino"],
-    "tienda_cod": ["cod_local", "cod_tienda", "codigo_tienda", "cod_loc",
+    "tienda_cod": ["codloc", "cod_local", "cod_tienda", "codigo_tienda", "cod_loc",
                    "tienda_cod", "cod_destino", "id_local"],
-    "tienda_nombre": ["nom_local", "des_local", "nombre_local", "nombre_tienda",
+    "tienda_nombre": ["localoperador", "nomloc", "desloc", "nom_local", "des_local", "nombre_local", "nombre_tienda",
                       "nom_tienda", "des_tienda", "desc_tienda", "tienda_nombre",
                       "nombre_loc", "tienda"],
-    "ciudad": ["des_ciudad", "nom_ciudad", "desc_ciudad", "ciudad", "departamento",
+    "ciudad": ["desciu", "codciu", "des_ciudad", "nom_ciudad", "desc_ciudad", "ciudad", "departamento",
                "provincia", "region", "zona"],
     "cadena": ["des_cadena", "nom_cadena", "tip_cadena", "tipo_cadena", "cadena",
                "marca_cadena"],
-    "unid_pedidas": ["cant_pedida", "cant_ped", "unid_pedidas", "cantidad_pedida",
+    "unid_pedidas": ["canped", "cant_pedida", "cant_ped", "unid_pedidas", "cantidad_pedida",
                      "und_pedidas", "qty_pedida", "total_pedido"],
-    "unid_despachadas": ["cant_despachada", "cant_desp", "unid_despachadas",
+    "unid_despachadas": ["candes", "candesp", "cant_despachada", "cant_desp", "unid_despachadas",
                          "cantidad_despachada", "und_despachadas", "qty_despachada",
                          "total_despachado"],
-    "unid_pendientes": ["cant_pendiente", "cant_pend", "unid_pendientes",
+    "unid_pendientes": ["canpen", "canpend", "cant_pendiente", "cant_pend", "unid_pendientes",
                         "cantidad_pendiente", "und_pendientes", "qty_pendiente", "saldo"],
 }
 
 ALIAS_PED_DETAIL = {
     "nro_pedido": ["nro_pedido", "nro_ped", "num_pedido", "numero_pedido", "cod_pedido",
                    "id_pedido", "numped", "nro_orden", "orden", "pedido"],
-    "fecha": ["fec_pedido", "fecha_pedido", "fec_emision", "fecha_emision",
+    "fecha": ["fecdoc", "fecped", "fec_pedido", "fecha_pedido", "fec_emision", "fecha_emision",
               "fec_doc", "fecha"],
     "tienda_cod": ["cod_local", "cod_tienda", "codigo_tienda", "cod_loc",
                    "tienda_cod", "cod_destino", "id_local"],
     "tienda_nombre": ["nombre_tienda", "tienda_nombre", "tienda", "nombre_loc",
                       "tienda_cliente", "cliente", "desc_tienda"],
-    "id_producto": ["id_producto", "codint_ma", "codint", "sku", "idproducto"],
-    "cod_modelo": ["cod_modelo", "codmod_ma", "codigo_modelo", "cod_mod", "modelo_cod"],
+    "id_producto": ["codint", "id_producto", "codint_ma", "codint", "sku", "idproducto"],
+    "cod_modelo": ["codmod", "cod_modelo", "codmod_ma", "codigo_modelo", "cod_mod", "modelo_cod"],
     "modelo": ["modelo", "desc_modelo", "nom_modelo", "descripcion"],
-    "cod_color": ["cod_color", "codcol_ma", "codigo_color", "color_cod"],
+    "cod_color": ["codcol", "cod_color", "codcol_ma", "codigo_color", "color_cod"],
     "color": ["color", "desc_color", "nom_color"],
-    "talla": ["talla", "talnum_ma", "talla_numero", "talla_nro", "size", "cod_talla"],
-    "barra": ["barra", "codbar_ma", "codigo_barra", "cod_barras", "ean", "gtin"],
-    "marca": ["des_marca", "nom_marca", "desc_marca", "marca"],
+    "talla": ["talnum", "talla", "talnum_ma", "talla_numero", "talla_nro", "size", "cod_talla"],
+    "barra": ["codbar", "barra", "codbar_ma", "codigo_barra", "cod_barras", "ean", "gtin"],
+    "marca": ["desmar", "codmar", "des_marca", "nom_marca", "desc_marca", "marca"],
     "clase": ["clase", "desc_clase", "linea_negocio"],
     "tipo_prenda": ["des_tipo_prenda", "tipo_prenda", "desc_tipo_prenda", "des_familia",
                     "familia", "subfamilia", "categoria", "tipo_producto"],
-    "unid_pedidas": ["cant_pedida", "cant_ped", "unid_pedidas", "cantidad_pedida",
+    "unid_pedidas": ["canped", "cant_pedida", "cant_ped", "unid_pedidas", "cantidad_pedida",
                      "und_pedidas", "qty_pedida", "cantidad"],
-    "unid_despachadas": ["cant_despachada", "cant_desp", "unid_despachadas",
+    "unid_despachadas": ["candes", "candesp", "cant_despachada", "cant_desp", "unid_despachadas",
                          "cantidad_despachada", "und_despachadas", "qty_despachada",
                          "cantidad_atendida"],
-    "unid_pendientes": ["cant_pendiente", "cant_pend", "unid_pendientes",
+    "unid_pendientes": ["canpen", "canpend", "cant_pendiente", "cant_pend", "unid_pendientes",
                         "cantidad_pendiente", "und_pendientes", "qty_pendiente", "saldo"],
 }
 
