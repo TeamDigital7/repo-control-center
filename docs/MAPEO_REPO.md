@@ -271,6 +271,25 @@ Del mismo modo, la dinamica agrupa `Modelo` sin distinguir mayusculas y conserva
 una capitalizacion arbitraria: 863 filas difieren solo en mayusculas/minusculas.
 El texto es el mismo.
 
+### 4.8 Universo de filas: VTA + BODEGA + CD
+
+La plantilla arma las filas desde la dinamica de `DATA`, o sea desde las llaves
+que aparecen en **VTA** o en **BODEGA GESTION**. Un SKU recien recepcionado en
+el CD todavia no tiene venta ni stock en tienda: con esa regla no genera fila y
+su disponible nunca llega al planner.
+
+Por eso el motor agrega tambien **las llaves del `STOCK CD` que traen unidades**
+(disponible o cualquier reserva distinta de cero) y no estan en ninguno de los
+dos archivos de movimiento. Se les aplican las mismas exclusiones que a `DATA`
+(`Clase = DESPACHOS`, `Marca = OTROS`, filas sin codigo de modelo), llegan con
+`VNT`, `STK` y `REP` vacios, y casi siempre sin `Temporada Comercial` asignada,
+por lo que se muestran como `(en blanco)`.
+
+Con los archivos del 26-08-2026 fueron **92 filas / 1.410 pares** (todas VANS:
+UPLAND, SUPER LOWPRO, RANGE EXP, LX AUTHENTIC 44, LX OLD SKOOL 36, LARKSPUR,
+AUTHENTIC CHINO, QUEENS HIGH PILE y VANS X ROWAN STRIPE). La app las lista
+aparte con la alerta **"SKU con stock solo en el CD"**.
+
 ---
 
 ## 5. Como saber que cuadra
@@ -292,6 +311,7 @@ Resultado con los archivos de agosto 2026:
 | Venta (VNT) | 37.400 | 30.791 | 6.609 | **0** | SI |
 | Stock disponible (STK) | 471.721 | 208.418 | 263.303 | **0** | SI |
 | Pedidos en camino | 5.285 | — | — | **0** | SI |
+| Disponible en el CD (DSP) | 281.440 | 281.440 | 0 | **0** | SI |
 | Filas (SKU unicos) | 30.493 | 30.493 | 0 | **0** | SI |
 
 Las exclusiones estan desglosadas: 2.434 unidades de `Clase = DESPACHOS`,
@@ -305,6 +325,19 @@ diferencia cero.
 > Este control ya encontro un caso real: el archivo `BODEGA GESTION` tambien
 > trae unidades vendidas (2 en el periodo de agosto), que la plantilla suma junto
 > con las del archivo de venta. Sin el cuadre habrian pasado inadvertidas.
+
+### 5.1 La linea `Disponible en el CD (DSP)`
+
+Es la que protege el armado: todo par disponible en el CD tiene que estar en una
+fila de la tabla. Hasta la corrida del 16-09-2026 no existia, y por eso paso
+inadvertido un descuadre real: la tabla mostraba **280.030** pares disponibles
+contra **281.440** del archivo `STOCK CD`, **1.410 pares menos**.
+
+La causa es el universo de filas (seccion 4.8): 92 llaves VANS recien
+recepcionadas en el CD no tenian venta ni stock en tienda, asi que no generaban
+fila y su disponible quedaba invisible para la reposicion. Las reservas
+(`ECOM`, `RT`, `WS`, `MM`) si cuadraban, porque esas llaves venian con reserva
+cero: el unico sintoma era el `DSP`.
 
 ---
 

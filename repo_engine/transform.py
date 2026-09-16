@@ -35,6 +35,10 @@ ATTR_SOURCES = {
 }
 
 
+#: Los mismos atributos, leidos desde STOCK CD (ahi la talla cambia de nombre).
+CD_ATTR_SOURCES = dict(ATTR_SOURCES, **{"Talla/Numero": "Talla/Nro/Curva Tarea"})
+
+
 @dataclass
 class BuildResult:
     repo: pd.DataFrame                 # 19 columnas fijas + 69*3 columnas de tienda
@@ -227,6 +231,62 @@ def _order_rows(df: pd.DataFrame, catalogs: Catalogs) -> pd.DataFrame:
     return tmp.drop(columns=[c for c in tmp.columns if c.startswith(("_r_", "_t_", "_talla_"))])
 
 
+def _filas_solo_cd(cd: pd.DataFrame, llaves: set) -> tuple[pd.DataFrame, list[str]]:
+    """Filas para los SKU que hoy solo existen en el CD.
+
+    El universo de la tabla sale de VTA + BODEGA GESTION. Un SKU recien
+    recepcionado en el CD todavia no tiene venta ni stock en tienda, asi que
+    sin esta fila su disponible queda invisible para la reposicion y el total
+    de la tabla no cuadra contra el disponible del CD.
+    """
+    vacio = pd.DataFrame(columns=["LLAVE"] + list(ATTR_SOURCES))
+    if cd is None or cd.empty or "LLAVE" not in cd.columns:
+        return vacio, []
+
+    sub = cd.drop_duplicates("LLAVE")
+    sub = sub.loc[~sub["LLAVE"].isin(llaves)]
+    if sub.empty:
+        return vacio, []
+
+    # Solo las que traen unidades: disponible o cualquier reserva distinta de 0.
+    unidades = pd.Series(0.0, index=sub.index)
+    for col in C.CD_LOOKUP_MAP.values():
+        if col in sub.columns:
+            unidades = unidades + pd.to_numeric(sub[col], errors="coerce").fillna(0.0)
+    sub = sub.loc[unidades != 0]
+    if sub.empty:
+        return vacio, []
+
+    # Las mismas exclusiones que la hoja DATA.
+    def texto(col):
+        return (sub[col].astype("string").str.upper() if col in sub.columns
+                else pd.Series(pd.NA, index=sub.index, dtype="string"))
+
+    fuera = texto("Clase").isin(C.EXCLUDED_CLASES) | texto("Marca").isin(C.EXCLUDED_MARCAS)
+    fuera = fuera.fillna(False) | sub["LLAVE"].isin(["--", "-", ""])
+    if "Cod. Modelo" in sub.columns:
+        fuera = fuera | sub["Cod. Modelo"].isna()
+    sub = sub.loc[~fuera]
+    if sub.empty:
+        return vacio, []
+
+    out = pd.DataFrame(index=sub.index)
+    for dest, src in CD_ATTR_SOURCES.items():
+        out[dest] = sub[src] if src in sub.columns else pd.NA
+    out["LLAVE"] = sub["LLAVE"]
+    out["Temporada Comercial"] = (out["Temporada Comercial"].astype("string")
+                                  .replace("", pd.NA).fillna(C.BLANK_LABEL))
+
+    dsp = C.CD_LOOKUP_MAP["DSP"]
+    disponible = float(pd.to_numeric(sub[dsp], errors="coerce").fillna(0).sum()) if dsp in sub else 0.0
+    notes = [
+        f"{len(out):,} SKU del Stock CD no tienen venta ni stock en tienda "
+        f"({disponible:,.0f} unidades disponibles). Se agregaron como fila para que "
+        "su disponible no quede fuera de la reposicion."
+    ]
+    return out.reset_index(drop=True)[["LLAVE"] + list(ATTR_SOURCES)], notes
+
+
 def build_repo(data: pd.DataFrame,
                cd: pd.DataFrame,
                rep_long: pd.DataFrame | None = None,
@@ -253,6 +313,14 @@ def build_repo(data: pd.DataFrame,
 
     repo = attrs.reset_index()
 
+    # -- SKU que hoy solo estan en el CD -----------------------------------
+    solo_cd, n_cd = _filas_solo_cd(cd, set(repo["LLAVE"]))
+    notes += n_cd
+    stats["filas_solo_cd"] = len(solo_cd)
+    repo["_solo_cd"] = False
+    if len(solo_cd):
+        repo = pd.concat([repo, solo_cd.assign(_solo_cd=True)], ignore_index=True)
+
     # -- BUSCARX contra STOCK CD -------------------------------------------
     cd_idx = cd.drop_duplicates("LLAVE").set_index("LLAVE")
     sku_map = cd_idx[C.CD_SKU_COLUMN].astype("string")
@@ -273,6 +341,9 @@ def build_repo(data: pd.DataFrame,
 
     for dest, src in C.CD_LOOKUP_MAP.items():
         repo[dest] = repo["LLAVE"].map(cd_idx[src]).fillna(0.0).astype(float)
+
+    if stats.get("filas_solo_cd"):
+        stats["disponible_solo_cd"] = float(repo.loc[repo["_solo_cd"], "DSP"].sum())
 
     # NVO DSP CD replica el disponible del CD (en la plantilla es DSP pegado).
     repo["NVO DSP CD"] = repo["DSP"]
@@ -323,8 +394,9 @@ def build_repo(data: pd.DataFrame,
     ordered_cols = list(C.FIXED_COLUMNS) + [
         f"{t.abrev}|{m}" for t in catalogs.tiendas for m in C.STORE_METRICS
     ]
-    repo = repo.reindex(columns=ordered_cols + ["LLAVE", "_sku_en_cd"]).reset_index(drop=True)
+    repo = repo.reindex(columns=ordered_cols + ["LLAVE", "_sku_en_cd", "_solo_cd"]).reset_index(drop=True)
     repo["_sku_en_cd"] = repo["_sku_en_cd"].fillna(False).astype(bool)
+    repo["_solo_cd"] = repo["_solo_cd"].fillna(False).astype(bool)
 
     stats["filas"] = len(repo)
     stats["tiendas"] = len(catalogs.tiendas)

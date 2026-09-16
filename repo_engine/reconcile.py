@@ -124,17 +124,41 @@ def build_cuadre(repo: pd.DataFrame,
         detalle=f"{sin_fila:,.0f} unidades de SKU sin stock ni venta en ninguna tienda",
     ))
 
+    # ---------------- disponible del CD ----------------
+    # Es el control que importa para armar la repo: cada unidad disponible en el
+    # CD tiene que estar en una fila de la tabla o estar explicada por una regla.
+    cd = loaded.get(C.SRC_CD)
+    if cd is not None and not cd.empty and "LLAVE" in cd.columns:
+        dsp_col = C.CD_LOOKUP_MAP["DSP"]
+        origen_dsp = _sum(cd, dsp_col)
+        cd_u = cd.drop_duplicates("LLAVE")
+        dup_dsp = origen_dsp - _sum(cd_u, dsp_col)      # BUSCARV se queda con la primera
+        llaves_repo = set(repo["LLAVE"]) if "LLAVE" in repo.columns else set()
+        sin_fila = cd_u.loc[~cd_u["LLAVE"].isin(llaves_repo)]
+        excl_dsp = _sum(sin_fila, dsp_col)
+        cuadre.lineas.append(Linea(
+            concepto="Disponible en el CD (DSP)",
+            origen=origen_dsp, en_repo=_sum(repo, "DSP"), excluido=excl_dsp + dup_dsp,
+            detalle=(f"{len(sin_fila):,} llaves del CD sin fila en el REPO "
+                     f"({excl_dsp:,.0f} unidades: Clase DESPACHOS, Marca OTROS o sin codigo) · "
+                     f"{dup_dsp:,.0f} en llaves duplicadas del CD"),
+        ))
+        llaves_cd = set(cd_u["LLAVE"])
+    else:
+        llaves_cd = set()
+
     # ---------------- filas ----------------
+    origen_filas = float(len(set(data["LLAVE"]) | llaves_cd))
     cuadre.lineas.append(Linea(
         concepto="Filas (SKU unicos)",
-        origen=float(data["LLAVE"].nunique()),
+        origen=origen_filas,
         en_repo=float(len(repo)),
-        excluido=float(data["LLAVE"].nunique() - len(repo)),
-        detalle="Cada LLAVE del periodo genera exactamente una fila del REPO",
+        excluido=origen_filas - len(repo),
+        detalle=("Cada LLAVE del periodo, mas las del CD con unidades, "
+                 "genera exactamente una fila del REPO"),
     ))
 
     # ---------------- cobertura de los BUSCARV ----------------
-    cd = loaded.get(C.SRC_CD)
     if cd is not None and "SKU" in repo.columns:
         con_match = int((repo["SKU"] != C.NA_TOKEN).sum())
         cuadre.desglose.append({
