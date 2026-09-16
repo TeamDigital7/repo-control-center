@@ -150,3 +150,16 @@ Minimo indispensable: `nro_pedido` y `estado` en la cabecera; `nro_pedido`,
 `unid_pedidas` y algo que identifique el producto en el detalle. Sin `fecha` en
 la cabecera no se puede acotar el periodo y la consulta se rechaza antes de
 ejecutarse.
+
+### Sacar los datos
+
+Al pie del tablero hay dos caminos, y **ambos respetan los filtros que tengas
+puestos**: lo que se descarga es exactamente lo que estas mirando.
+
+| Formato | Que trae |
+|---|---|
+| **Excel** | Libro completo: Resumen con los cuatro KPIs, una hoja por vista (tienda, cadena, marca, clasificacion), la matriz Tipo x Estado, la evolucion por mes y semana, y el detalle linea a linea. El % de cumplimiento va en semaforo. |
+| **CSV** | Una sola vista, la que elijas en el desplegable, o el detalle completo. Sale en UTF-8 con BOM para que Excel respete los acentos al abrirlo de un doble clic. |
+
+La hoja de lineas corta en 200 mil filas: por encima de eso Excel se vuelve
+inmanejable y el libro lo dice en la propia hoja. Para el detalle completo, CSV.
