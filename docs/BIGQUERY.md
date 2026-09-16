@@ -172,3 +172,15 @@ puestos**: lo que se descarga es exactamente lo que estas mirando.
 
 La hoja de lineas corta en 200 mil filas: por encima de eso Excel se vuelve
 inmanejable y el libro lo dice en la propia hoja. Para el detalle completo, CSV.
+
+### Si el mapeo sale con "0 columnas"
+
+Significa que `INFORMATION_SCHEMA` respondio sin error pero no encontro esa
+tabla: el dataset existe y hay permiso, lo que no existe es una tabla con ese
+nombre **exacto** (distingue mayusculas de minusculas).
+
+La app no se queda ahi: busca las tablas del proyecto que tengan `pedido` en el
+nombre —primero en el dataset indicado y despues por region— y las lista con su
+nombre completo, listo para copiar a `pedidos_header_table` y
+`pedidos_detail_table`. Las dos consultas son a `INFORMATION_SCHEMA`: gratis y
+sin tocar los datos.

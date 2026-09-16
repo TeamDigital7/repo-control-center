@@ -49,8 +49,42 @@ def _mapa(conn, tabla: str, fuente: str) -> dict | None:
         issue_box("error", f"No pude leer el esquema de {tabla.split('.')[-1]}",
                   f"{type(exc).__name__}: {exc}")
         return None
+    if not len(cols):
+        _no_existe(conn, tabla)
+        return None
     st.session_state[f"cols_{fuente}"] = cols
     return bq.mapear(list(cols["column_name"]), bq.ALIAS_POR_FUENTE[fuente])
+
+
+def _no_existe(conn, tabla: str) -> None:
+    """La consulta corrio pero el dataset no tiene esa tabla: hay que ubicarla.
+
+    Que INFORMATION_SCHEMA devuelva cero filas sin error significa que el
+    dataset existe y hay permiso; lo que no existe es la tabla con ese nombre
+    exacto. Se busca donde si esta en vez de dejar al usuario adivinando.
+    """
+    proyecto, dataset, nombre = tabla.split(".")
+    issue_box("error", f"No existe la tabla {nombre}",
+              f"El dataset `{dataset}` responde y tienes permiso, pero no tiene "
+              f"ninguna tabla que se llame exactamente `{nombre}`. "
+              "Puede estar en otro dataset, o el nombre no coincide "
+              "(INFORMATION_SCHEMA distingue mayusculas de minusculas).")
+    with st.spinner("Buscando donde esta esa tabla…"):
+        try:
+            encontradas = bq.buscar_tablas(conn, tabla, "pedido")
+        except Exception:
+            encontradas = None
+    if encontradas is None or not len(encontradas):
+        st.caption("Tampoco encontre tablas con 'pedido' en el nombre dentro del "
+                   "proyecto. Confirma con el equipo de datos el nombre completo.")
+        return
+    st.caption(f"Tablas del proyecto `{proyecto}` con **pedido** en el nombre. "
+               "Copia el nombre completo de la que corresponda y ponla en los "
+               "secrets como `pedidos_header_table` / `pedidos_detail_table`:")
+    vista = encontradas.copy()
+    vista.insert(0, "nombre completo",
+                 proyecto + "." + vista["table_schema"] + "." + vista["table_name"])
+    st.dataframe(vista, width="stretch", hide_index=True, height=260)
 
 
 def _editor(conn, tabla: str, fuente: str, mapa: dict) -> dict:
@@ -61,6 +95,10 @@ def _editor(conn, tabla: str, fuente: str, mapa: dict) -> dict:
             st.session_state[f"cols_{fuente}"] = cols
         except Exception:
             return mapa
+    if not len(cols):
+        st.caption("Sin columnas que mapear: primero hay que dar con la tabla "
+                   "correcta (ver el aviso de arriba).")
+        return mapa
     opciones = ["—"] + sorted(str(c) for c in cols["column_name"])
     alias = bq.ALIAS_POR_FUENTE[fuente]
     obligatorios = (bq.OBLIG_PED_HEADER if fuente == "ped_header"
@@ -99,11 +137,14 @@ def panel_tablas(conn):
     except RuntimeError as exc:
         issue_box("error", "Revisa el nombre de las tablas en los secrets", str(exc))
         return None, None
-    chips([("ok", t_h.split(".")[-1]), ("ok", t_d.split(".")[-1])])
+    # En gris hasta saber que existen: un check verde sobre una tabla que no
+    # esta seria mentir en la parte que mas rapido se mira.
+    chips([("idle", t_h.split(".")[-1]), ("idle", t_d.split(".")[-1])])
 
     m_h, m_d = _mapa(conn, t_h, "ped_header"), _mapa(conn, t_d, "ped_detail")
     if m_h is None or m_d is None:
         return None, None
+    chips([("ok", "cabecera conectada"), ("ok", "detalle conectado")])
 
     falta_h = bq.faltantes_pedidos(m_h, "ped_header")
     falta_d = bq.faltantes_pedidos(m_d, "ped_detail")

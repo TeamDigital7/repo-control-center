@@ -179,6 +179,42 @@ def columnas(conn: Conexion, tabla: str) -> pd.DataFrame:
     return conn.cliente.query(sql, job_config=cfg).to_dataframe()
 
 
+def buscar_tablas(conn: Conexion, tabla: str, patron: str = "pedido") -> pd.DataFrame:
+    """Donde vive realmente una tabla que no aparecio donde se la busco.
+
+    Primero mira el dataset indicado y despues, si ahi no hay nada, barre el
+    proyecto entero por region. Las dos consultas son a INFORMATION_SCHEMA:
+    son gratis y no tocan los datos.
+    """
+    from google.cloud import bigquery
+
+    partes = tabla.split(".")
+    if len(partes) != 3:
+        return pd.DataFrame(columns=["table_schema", "table_name"])
+    proyecto, dataset, _nombre = partes
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("patron", "STRING", f"%{patron.lower()}%")])
+
+    intentos = (
+        f"""SELECT table_schema, table_name
+            FROM `{proyecto}.{dataset}.INFORMATION_SCHEMA.TABLES`
+            WHERE LOWER(table_name) LIKE @patron
+            ORDER BY table_name LIMIT 50""",
+        f"""SELECT table_schema, table_name
+            FROM `{proyecto}.region-us.INFORMATION_SCHEMA.TABLES`
+            WHERE LOWER(table_name) LIKE @patron
+            ORDER BY table_schema, table_name LIMIT 50""",
+    )
+    for sql in intentos:
+        try:
+            df = conn.cliente.query(sql, job_config=cfg).to_dataframe()
+        except Exception:
+            continue
+        if len(df):
+            return df
+    return pd.DataFrame(columns=["table_schema", "table_name"])
+
+
 def mapear(cols: list[str], alias: dict | None = None) -> dict[str, str]:
     """Empareja cada campo logico con la primera columna real que coincida."""
     alias = alias or ALIAS_VENTAS
