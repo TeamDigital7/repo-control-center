@@ -21,9 +21,12 @@ import pandas as pd
 
 from .catalogs import Catalogs, load_catalogs, normalize_store_code
 
-#: Codigo del CD dentro del maestro de tiendas: no es una tienda de la cadena.
+#: El CD no esta en el maestro de tiendas (no es una tienda de la cadena), pero
+#: si es el mayor origen de pedidos: sin nombre propio salia como "(en blanco)"
+#: encabezando el ranking.
 COD_CD = "320"
 CADENA_CD = "BOD 320"
+NOMBRE_CD = "BODEGA FORUS 320"
 
 #: Dimensiones que el tablero ofrece como filtro, en el orden del BI.
 DIMENSIONES = {
@@ -122,8 +125,10 @@ def construir(detalle: pd.DataFrame,
         lambda k: CADENA_CD if str(k) == normalize_store_code(COD_CD)
         else (abrev.get(k, "").split(" ")[0] or pd.NA) if pd.notna(k) else pd.NA)
     out["cadena"] = out["cadena"].fillna(pd.Series(derivada, index=out.index))
-    del_nombre = out["tienda_key"].map(lambda k: nombres.get(k, pd.NA)
-                                       if pd.notna(k) else pd.NA)
+    clave_cd = normalize_store_code(COD_CD)
+    del_nombre = out["tienda_key"].map(
+        lambda k: (NOMBRE_CD if str(k) == clave_cd else nombres.get(k, pd.NA))
+        if pd.notna(k) else pd.NA)
     out["tienda"] = out["tienda"].fillna(pd.Series(del_nombre, index=out.index))
 
     out["estado"] = out["estado"].fillna("(sin estado)")
