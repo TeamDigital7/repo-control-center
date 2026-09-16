@@ -80,6 +80,27 @@ def collect_issues(repo: pd.DataFrame,
                                        C.CD_SKU_COLUMN, "Disponible"]].head(200),
             ))
 
+    # 2b. SKU que solo existen en el CD --------------------------------------
+    if stats.get("filas_solo_cd"):
+        n = int(stats["filas_solo_cd"])
+        disp = float(stats.get("disponible_solo_cd", 0.0))
+        cols = ["Marca", "Clase", "Cod Modelo", "Cod Color", "Talla/Numero",
+                "Modelo", "Color", "Temporada Comercial", "DSP"]
+        solo = (repo.loc[repo["_solo_cd"], [c for c in cols if c in repo.columns]].head(300)
+                if "_solo_cd" in repo.columns else None)
+        issues.append(Issue(
+            code="sku_solo_cd", severity="warn",
+            title="SKU con stock solo en el CD",
+            detail=(
+                f"{n:,} SKU tienen unidades en el CD pero ninguna venta ni stock en tienda "
+                f"({disp:,.0f} unidades disponibles). Son recepciones nuevas: se agregaron "
+                "como fila para que entren a la reposicion, y suelen venir sin Temporada "
+                "Comercial asignada."
+            ),
+            count=n,
+            sample=solo,
+        ))
+
     # 3. Campos criticos vacios ----------------------------------------------
     criticos = ["Marca", "Clase", "Cod Modelo", "Cod Color", "Talla/Numero"]
     vacios = repo[criticos].isna().any(axis=1)
