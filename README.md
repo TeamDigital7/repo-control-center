@@ -15,7 +15,7 @@ los modulos.
 ### 🔌 BigQuery (opcional)
 
 Si estan los secrets, la **venta** deja de subirse a mano: se elige un rango de
-fechas y la app la trae de `silver.ft_pe_reporteria_ventas_tablon`, agregada en
+fechas y la app la trae de la tabla de venta configurada en los secrets, agregada en
 el servidor y con dry run previo para controlar el costo. El **maestro ARTI**
 llena el directorio de SKU de una vez.
 
@@ -204,8 +204,8 @@ editar la lista de usuarios:
 [app_auth]
 [app_auth.users]
 "admin" = "CAMBIAR_ESTA_CLAVE"
-"hugo.camara@forus.pe" = "CAMBIAR_ESTA_CLAVE"
-"luis.nunez@forus.pe" = "CAMBIAR_ESTA_CLAVE"
+"nombre.apellido@empresa.com" = "CAMBIAR_ESTA_CLAVE"
+"otra.persona@empresa.com" = "CAMBIAR_ESTA_CLAVE"
 ```
 
 Esta app **solo necesita `[app_auth]`**. Los bloques `[bigquery]`,

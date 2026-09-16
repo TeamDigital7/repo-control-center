@@ -12,12 +12,12 @@ fechas, y llena el directorio de SKU desde ARTI.
 
 | Dato | Origen | Por que |
 |---|---|---|
-| **Venta** | 🟢 BigQuery, por rango de fechas | `silver.ft_pe_reporteria_ventas_tablon` |
-| **ID Producto / codigos de barra** | 🟢 BigQuery (ARTI) | `bronze.stg_pe_central_arti` |
+| **Venta** | 🟢 BigQuery, por rango de fechas | la tabla de venta de los secrets |
+| **ID Producto / codigos de barra** | 🟢 BigQuery (ARTI) | el maestro de productos de los secrets |
 | **Stock CD** | 🔵 Se sigue subiendo | La tabla necesita el stock **del momento** |
 | **Bodega Gestion** | 🔵 Se sigue subiendo | Idem: es una foto, no un historico |
-| **Detallado de pedidos** | 🟢 BigQuery, por rango de fechas | `bronze.stg_pe_perucentral_pedidos_detail` |
-| **Evolucion de pedidos** | 🟢 BigQuery, por rango de fechas | `bronze.stg_pe_perucentral_pedidos_header` |
+| **Detallado de pedidos** | 🟢 BigQuery, por rango de fechas | la tabla de detalle de los secrets |
+| **Evolucion de pedidos** | 🟢 BigQuery, por rango de fechas | la tabla de cabecera de los secrets |
 | **Traspasos (hoja guias)** | 🔵 Se sigue subiendo | Pendiente de tener la tabla |
 
 Las dos tablas de pedidos alimentan la columna `REP` de la Tabla de Repo y el
@@ -29,9 +29,13 @@ Los nombres por defecto se pueden cambiar en los secrets sin tocar codigo:
 
 ```toml
 [bigquery]
-pedidos_header_table = "otro-proyecto.otro_dataset.mi_tabla_header"
-pedidos_detail_table = "otro-proyecto.otro_dataset.mi_tabla_detail"
+pedidos_header_table = "PROY.DATASET.TABLA_CABECERA_DE_PEDIDOS"
+pedidos_detail_table = "PROY.DATASET.TABLA_DETALLE_DE_PEDIDOS"
 ```
+
+**Son obligatorias**: el codigo no trae rutas por defecto. Este repositorio es
+publico y un `proyecto.dataset.tabla` describe la infraestructura interna, asi
+que las rutas viven solo en los secrets.
 
 Dos avisos que ahorran un rato de depuracion:
 

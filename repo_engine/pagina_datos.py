@@ -46,7 +46,11 @@ def panel_conexion() -> bq.Conexion | None:
         issue_box("error", "No se pudo conectar", conn.detalle)
         return None
 
-    tabla = bq.tabla_ventas(cfg)
+    try:
+        tabla = bq.tabla_ventas(cfg)
+    except RuntimeError as exc:
+        issue_box("error", "Falta configurar la tabla de venta", str(exc))
+        return None
     chips([("ok", f"Proyecto {conn.proyecto}"), ("ok", tabla.split(".")[-1])])
 
     mapa = (bq.cargar_mapeo().get(tabla) or st.session_state.get("bq_mapa"))
@@ -161,7 +165,11 @@ def traer_ventas(conn, desde: date, hasta: date, max_gb: float,
                  diaria: bool = False):
     """Ejecuta la consulta mostrando antes cuanto va a leer."""
     cfg = bq.config()
-    tabla = bq.tabla_ventas(cfg)
+    try:
+        tabla = bq.tabla_ventas(cfg)
+    except RuntimeError as exc:
+        issue_box("error", "Falta configurar la tabla de venta", str(exc))
+        return None
     mapa = st.session_state.get("bq_mapa") or bq.cargar_mapeo().get(tabla, {})
     if bq.faltantes(mapa):
         issue_box("error", "Mapeo incompleto",

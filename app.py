@@ -449,7 +449,7 @@ def _render_sku_directory():
             else:
                 try:
                     with st.spinner("Consultando el maestro de productos…"):
-                        df, gb, mapa = bq.arti(conn, bq.tabla_arti())
+                        df, gb, mapa = bq.arti(conn, bq.tabla_arti())   # valida los secrets
                     llaves, via = bq.llaves_desde_arti(df, mapa, _barras_conocidas())
                     nuevo = dict(directorio)
                     sumados = sku_directory.merge(nuevo, llaves["llave"], llaves["id"])
