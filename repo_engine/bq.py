@@ -446,3 +446,259 @@ def a_formato_venta_diaria(df: pd.DataFrame) -> pd.DataFrame:
         if col not in out.columns:
             out[col] = pd.NA
     return out
+
+
+# ---------------------------------------------------------------------------
+# pedidos: cabecera + detalle
+# ---------------------------------------------------------------------------
+#
+# Reemplazan la subida manual del DETALLADO y la EVOLUCION, y alimentan el
+# dashboard de pedidos. Como son tablas de staging, los nombres de columna no
+# se asumen: se descubren con INFORMATION_SCHEMA y se emparejan por alias,
+# igual que el tablon de ventas. Lo que no se reconozca se corrige una vez en
+# pantalla y queda guardado en `data/bq_mapping.json`.
+
+TABLA_PED_HEADER = "forus-analitica-prod-datalake.bronze.stg_pe_perucentral_pedidos_header"
+TABLA_PED_DETAIL = "forus-analitica-prod-datalake.bronze.stg_pe_perucentral_pedidos_detail"
+
+ALIAS_PED_HEADER = {
+    "nro_pedido": ["nro_pedido", "nro_ped", "numero_pedido", "num_pedido", "pedido",
+                   "id_pedido", "orden", "nro_orden", "numped", "cod_pedido"],
+    "fecha": ["fecha_pedido", "fecha", "fec_pedido", "fecha_emision", "fec_emision",
+              "fecha_aprobacion", "fecha_registro", "fec_doc", "fecha_documento"],
+    "estado": ["estado", "estado_pedido", "desc_estado", "situacion", "status",
+               "estado_desc", "nom_estado"],
+    "tipo_pedido": ["tipo_pedido", "tipo_ped", "clasificacion", "clasificacion_pedido",
+                    "desc_tipo_pedido", "motivo", "tipo", "tipo_documento"],
+    "canal": ["canal", "canal_venta", "desc_canal", "tipo_canal"],
+    "bodega_origen": ["bodega_origen", "origen", "cod_bodega_origen", "almacen_origen",
+                      "bodega", "cod_bodega"],
+    "destino": ["destino", "bodega_destino", "almacen_destino", "tienda_destino",
+                "nombre_destino", "desc_destino"],
+    "tienda_cod": ["cod_tienda", "tienda_cod", "codigo_tienda", "cod_local",
+                   "cod_destino", "local", "cod_loc"],
+    "tienda_nombre": ["nombre_tienda", "tienda_nombre", "tienda", "nombre_loc",
+                      "desc_tienda", "nom_tienda", "nombre_local"],
+    "ciudad": ["ciudad", "desc_ciudad", "nom_ciudad", "departamento", "provincia",
+               "region", "zona"],
+    "cadena": ["cadena", "tipo_cadena", "desc_cadena", "marca_cadena", "nom_cadena"],
+    "unid_pedidas": ["unid_pedidas", "cant_pedida", "cantidad_pedida", "und_pedidas",
+                     "qty_pedida", "total_pedido"],
+    "unid_despachadas": ["unid_despachadas", "cant_despachada", "cantidad_despachada",
+                         "und_despachadas", "qty_despachada", "total_despachado"],
+    "unid_pendientes": ["unid_pendientes", "cant_pendiente", "cantidad_pendiente",
+                        "und_pendientes", "qty_pendiente", "saldo"],
+}
+
+ALIAS_PED_DETAIL = {
+    "nro_pedido": ["nro_pedido", "nro_ped", "numero_pedido", "num_pedido", "pedido",
+                   "id_pedido", "orden", "nro_orden", "numped", "cod_pedido"],
+    "fecha": ["fecha_pedido", "fecha", "fec_pedido", "fecha_emision", "fec_doc"],
+    "tienda_cod": ["cod_tienda", "tienda_cod", "codigo_tienda", "cod_local",
+                   "cod_destino", "local", "cod_loc"],
+    "tienda_nombre": ["nombre_tienda", "tienda_nombre", "tienda", "nombre_loc",
+                      "tienda_cliente", "cliente", "desc_tienda"],
+    "id_producto": ["id_producto", "codint_ma", "codint", "sku", "idproducto"],
+    "cod_modelo": ["cod_modelo", "codmod_ma", "codigo_modelo", "cod_mod", "modelo_cod"],
+    "modelo": ["modelo", "desc_modelo", "nom_modelo", "descripcion"],
+    "cod_color": ["cod_color", "codcol_ma", "codigo_color", "color_cod"],
+    "color": ["color", "desc_color", "nom_color"],
+    "talla": ["talla", "talnum_ma", "talla_numero", "talla_nro", "size", "cod_talla"],
+    "barra": ["barra", "codbar_ma", "codigo_barra", "cod_barras", "ean", "gtin"],
+    "marca": ["marca", "desc_marca", "nom_marca"],
+    "clase": ["clase", "desc_clase", "linea_negocio"],
+    "tipo_prenda": ["tipo_prenda", "desc_tipo_prenda", "categoria", "familia",
+                    "subfamilia", "tipo_producto"],
+    "unid_pedidas": ["unid_pedidas", "cant_pedida", "cantidad_pedida", "und_pedidas",
+                     "qty_pedida", "cantidad"],
+    "unid_despachadas": ["unid_despachadas", "cant_despachada", "cantidad_despachada",
+                         "und_despachadas", "qty_despachada", "cantidad_atendida"],
+    "unid_pendientes": ["unid_pendientes", "cant_pendiente", "cantidad_pendiente",
+                        "und_pendientes", "qty_pendiente", "saldo"],
+}
+
+#: Lo minimo para que el cruce y la columna REP funcionen.
+OBLIG_PED_HEADER = ("nro_pedido", "estado")
+OBLIG_PED_DETAIL = ("nro_pedido", "unid_pedidas")
+
+ALIAS_POR_FUENTE = {
+    "ped_header": ALIAS_PED_HEADER,
+    "ped_detail": ALIAS_PED_DETAIL,
+    "ventas": ALIAS_VENTAS,
+}
+
+
+def tabla_ped_header(cfg: dict | None = None) -> str:
+    cfg = config() if cfg is None else cfg
+    return str(cfg.get("pedidos_header_table") or cfg.get("tabla_pedidos_header")
+               or TABLA_PED_HEADER).strip()
+
+
+def tabla_ped_detail(cfg: dict | None = None) -> str:
+    cfg = config() if cfg is None else cfg
+    return str(cfg.get("pedidos_detail_table") or cfg.get("tabla_pedidos_detalle")
+               or TABLA_PED_DETAIL).strip()
+
+
+def faltantes_pedidos(mapa: dict, fuente: str) -> list[str]:
+    obligatorios = OBLIG_PED_HEADER if fuente == "ped_header" else OBLIG_PED_DETAIL
+    problemas = [c for c in obligatorios if c not in mapa]
+    if fuente == "ped_detail" and not any(
+            c in mapa for c in ("cod_modelo", "id_producto", "barra")):
+        problemas.append("producto (Cod. Modelo, ID Producto o barra)")
+    if fuente == "ped_header" and "fecha" not in mapa:
+        problemas.append("fecha (sin ella no se puede acotar el periodo)")
+    return problemas
+
+
+def _fecha_where(mapa: dict, alias_tabla: str = "") -> str:
+    """Filtro de periodo. Siempre parametrizado, nunca interpolado."""
+    pref = f"{alias_tabla}." if alias_tabla else ""
+    return f"DATE({pref}`{mapa['fecha']}`) BETWEEN @desde AND @hasta"
+
+
+def sql_ped_header(mapa: dict, tabla: str) -> str:
+    campos = [c for c in ALIAS_PED_HEADER if c in mapa]
+    select = ",\n               ".join(_select(mapa, campos))
+    return f"""
+        SELECT {select}
+        FROM `{tabla}`
+        WHERE {_fecha_where(mapa)}
+    """
+
+
+def sql_ped_detail(mapa_d: dict, tabla_d: str,
+                   mapa_h: dict | None = None, tabla_h: str | None = None) -> str:
+    """Detalle del periodo.
+
+    Si el detalle trae su propia fecha se filtra directo. Si no, se acota con
+    los pedidos de la cabecera que caen en el rango: sin ese `IN` habria que
+    leer la tabla entera.
+    """
+    campos = [c for c in ALIAS_PED_DETAIL if c in mapa_d]
+    select = ",\n               ".join(_select(mapa_d, campos))
+    if "fecha" in mapa_d:
+        where = _fecha_where(mapa_d)
+    elif mapa_h and tabla_h and "fecha" in mapa_h:
+        where = (f"`{mapa_d['nro_pedido']}` IN (SELECT `{mapa_h['nro_pedido']}` "
+                 f"FROM `{tabla_h}` WHERE {_fecha_where(mapa_h)})")
+    else:
+        raise RuntimeError(
+            "Ni el detalle ni la cabecera tienen columna de fecha mapeada: no hay "
+            "como acotar el periodo y la consulta leeria la tabla completa.")
+    return f"""
+        SELECT {select}
+        FROM `{tabla_d}`
+        WHERE {where}
+    """
+
+
+def ped_header(conn: Conexion, mapa: dict, tabla: str, desde: date, hasta: date,
+               max_gb: float = MAX_GB_POR_DEFECTO):
+    params = [_param("desde", "DATE", desde), _param("hasta", "DATE", hasta)]
+    df, gb = ejecutar(conn, sql_ped_header(mapa, tabla), params, max_gb)
+    return df.reset_index(drop=True), gb
+
+
+def ped_detail(conn: Conexion, mapa_d: dict, tabla_d: str, desde: date, hasta: date,
+               mapa_h: dict | None = None, tabla_h: str | None = None,
+               max_gb: float = MAX_GB_POR_DEFECTO):
+    params = [_param("desde", "DATE", desde), _param("hasta", "DATE", hasta)]
+    sql = sql_ped_detail(mapa_d, tabla_d, mapa_h, tabla_h)
+    df, gb = ejecutar(conn, sql, params, max_gb)
+    return df.reset_index(drop=True), gb
+
+
+# ---------------------------------------------------------------------------
+# adaptadores de pedidos al formato de los lectores de Excel
+# ---------------------------------------------------------------------------
+
+def _texto(serie) -> pd.Series:
+    return (serie.astype("string").str.strip()
+            .str.replace(r"^'+", "", regex=True)
+            .replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA}))
+
+
+def a_formato_evolucion(df: pd.DataFrame) -> pd.DataFrame:
+    """Deja la cabecera igual que devuelve el lector del Excel de EVOLUCION."""
+    renombra = {
+        "nro_pedido": "Nro. Pedido", "estado": "Estado", "canal": "Canal",
+        "tipo_pedido": "Clasificacion", "bodega_origen": "Bodega origen",
+        "destino": "Destino", "unid_pedidas": "Unid. Pedidas",
+        "unid_despachadas": "Unid. Despachadas", "unid_pendientes": "Unid. Pendientes",
+    }
+    out = df.rename(columns=renombra).copy()
+    if "Nro. Pedido" not in out.columns:
+        raise RuntimeError("La cabecera no trae el numero de pedido mapeado.")
+    out["Nro. Pedido"] = _texto(out["Nro. Pedido"])
+    for col in ("Estado", "Clasificacion", "Destino", "Canal", "Bodega origen"):
+        if col in out.columns:
+            out[col] = _texto(out[col])
+    for col in ("Unid. Pedidas", "Unid. Despachadas", "Unid. Pendientes"):
+        out[col] = (pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+                    if col in out.columns else 0.0)
+    return out.reset_index(drop=True)
+
+
+def a_formato_detallado(df: pd.DataFrame) -> pd.DataFrame:
+    """Deja el detalle igual que devuelve el lector del Excel de DETALLADO.
+
+    Incluye `LLAVE` y `_tienda_key`, que el lector deriva y el motor de REP da
+    por hechos. `Tienda / Cliente` se rearma como "008 HP JOCKEY" cuando la
+    tabla trae el codigo y el nombre por separado, que es el formato del que
+    parte el resto de la app.
+    """
+    from .catalogs import normalize_store_code
+    from .readers import build_llave
+
+    renombra = {
+        "nro_pedido": "Numero Pedido", "fecha": "Fecha Pedido",
+        "id_producto": "Id Producto", "cod_modelo": "Cod. Modelo", "modelo": "Modelo",
+        "cod_color": "Cod. Color", "color": "Color", "talla": "Talla / Numero",
+        "barra": "Barra", "marca": "Marca", "clase": "Clase",
+        "tipo_prenda": "Tipo Prenda", "unid_pedidas": "Unid. Pedidas",
+        "unid_despachadas": "Unid. Despachadas", "unid_pendientes": "Unid. Pendientes",
+    }
+    out = df.rename(columns=renombra).copy()
+    if "Numero Pedido" not in out.columns:
+        raise RuntimeError("El detalle no trae el numero de pedido mapeado.")
+
+    for col in ("Numero Pedido", "Cod. Modelo", "Cod. Color", "Talla / Numero",
+                "Modelo", "Color", "Clase", "Marca", "Tipo Prenda", "Id Producto",
+                "Barra"):
+        if col in out.columns:
+            out[col] = _texto(out[col])
+
+    cod = _texto(out["tienda_cod"]) if "tienda_cod" in out.columns else None
+    nombre = _texto(out["tienda_nombre"]) if "tienda_nombre" in out.columns else None
+    if cod is not None and nombre is not None:
+        out["Tienda / Cliente"] = (cod.fillna("") + " " + nombre.fillna("")).str.strip()
+    elif nombre is not None:
+        out["Tienda / Cliente"] = nombre
+    elif cod is not None:
+        out["Tienda / Cliente"] = cod
+    else:
+        out["Tienda / Cliente"] = pd.NA
+
+    if cod is not None:
+        out["_tienda_key"] = cod.map(lambda v: normalize_store_code(v)
+                                     if pd.notna(v) else pd.NA)
+    else:
+        # Mismo camino que el lector del Excel: "008 HP JOCKEY" -> 8.
+        extraido = out["Tienda / Cliente"].astype("string").str.extract(
+            r"^\s*(\d{1,4})\s+\S")[0]
+        out["_tienda_key"] = extraido.map(lambda v: normalize_store_code(v)
+                                          if pd.notna(v) else pd.NA)
+
+    for col in ("Unid. Pedidas", "Unid. Despachadas", "Unid. Pendientes"):
+        out[col] = (pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+                    if col in out.columns else 0.0)
+
+    for col in ("Cod. Modelo", "Cod. Color", "Talla / Numero"):
+        if col not in out.columns:
+            out[col] = pd.NA
+    out["LLAVE"] = build_llave(out["Cod. Modelo"], out["Cod. Color"],
+                               out["Talla / Numero"])
+    out = out.drop(columns=[c for c in ("tienda_cod", "tienda_nombre")
+                            if c in out.columns])
+    return out.reset_index(drop=True)

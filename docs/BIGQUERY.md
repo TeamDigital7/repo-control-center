@@ -16,12 +16,22 @@ fechas, y llena el directorio de SKU desde ARTI.
 | **ID Producto / codigos de barra** | 🟢 BigQuery (ARTI) | `bronze.stg_pe_central_arti` |
 | **Stock CD** | 🔵 Se sigue subiendo | La tabla necesita el stock **del momento** |
 | **Bodega Gestion** | 🔵 Se sigue subiendo | Idem: es una foto, no un historico |
-| **Detallado de pedidos** | 🔵 Se sigue subiendo | Pendiente de tener la tabla |
-| **Evolucion de pedidos** | 🔵 Se sigue subiendo | Pendiente de tener la tabla |
+| **Detallado de pedidos** | 🟢 BigQuery, por rango de fechas | `bronze.stg_pe_perucentral_pedidos_detail` |
+| **Evolucion de pedidos** | 🟢 BigQuery, por rango de fechas | `bronze.stg_pe_perucentral_pedidos_header` |
 | **Traspasos (hoja guias)** | 🔵 Se sigue subiendo | Pendiente de tener la tabla |
 
-Cuando existan las tablas de pedidos y de control de pedidos, se enchufan igual
-que la de venta: solo hay que agregar su nombre a los secrets.
+Las dos tablas de pedidos alimentan la columna `REP` de la Tabla de Repo y el
+**Dashboard de Pedidos** (seccion 6). En el paso de carga aparece el selector
+*Origen de los pedidos*: subir los dos Excel, o traerlos por rango de fechas.
+Si una tabla falla, el camino del Excel sigue disponible sin tocar nada.
+
+Los nombres por defecto se pueden cambiar en los secrets sin tocar codigo:
+
+```toml
+[bigquery]
+pedidos_header_table = "proyecto.dataset.tabla"
+pedidos_detail_table = "proyecto.dataset.tabla"
+```
 
 ---
 
@@ -89,3 +99,54 @@ con el TXT:
 Tambien se verifico que el mapeo automatico funciona con nombres alternativos
 (`fec_doc`, `cod_local`, `desc_local`, `codint_ma`, `cant_venta`, `talla_desc`)
 y que sin secrets la app degrada limpio a la subida de archivos.
+
+---
+
+## 6. Dashboard de Pedidos
+
+Modulo **Dashboard de Pedidos** en la navegacion lateral. Reproduce el reporte
+de BI de pedidos contra BigQuery, sin exportar nada a mano.
+
+### Como se calcula
+
+Todo sale del **detalle** (la linea del pedido, que es la que trae producto y
+tienda) enriquecido con los atributos de la **cabecera** cruzando por numero de
+pedido. Agregar por la cabecera contaria cada pedido una vez en vez de cada
+par, y las cifras no calzarian con el BI.
+
+| Indicador | Formula |
+|---|---|
+| Cantidad Pedida | `SUM(unidades pedidas)` |
+| Cantidad Despachada | `SUM(unidades despachadas)` |
+| Var Pedidos | pedida − despachada |
+| % Cumplimiento | despachada / pedida |
+
+### Filtros
+
+Tipo de Pedido, Tipo de Cadena, Ciudad, Marca, Tienda, Cod Mod Col, Tipo Prenda
+y Estado. Vacio significa *todas*, igual que los slicers del BI. **Los filtros
+trabajan en memoria**: se consulta BigQuery una sola vez por periodo y filtrar
+despues no vuelve a cobrar.
+
+Cada filtro aparece solo si su columna existe en las tablas y trae datos, asi
+que el tablero no se rompe si el staging cambia.
+
+### La cadena no sale del tablon
+
+`Tipo de Cadena` se deriva del **maestro de tiendas** (`data/catalogos.json`)
+usando el codigo de tienda, no de una columna de staging: el codigo es estable
+y el nombre de cadena no siempre. La bodega 320 se muestra como `BOD 320`, que
+es el CD y no una tienda de la cadena. Si el tablon trae su propia columna de
+cadena, esa manda.
+
+### Mapeo de columnas
+
+Las dos tablas son de staging, asi que los nombres de columna no se asumen: se
+descubren con `INFORMATION_SCHEMA` y se emparejan por alias, igual que el
+tablon de ventas. Lo que no se reconozca se corrige una vez en pantalla y queda
+guardado en `data/bq_mapping.json`.
+
+Minimo indispensable: `nro_pedido` y `estado` en la cabecera; `nro_pedido`,
+`unid_pedidas` y algo que identifique el producto en el detalle. Sin `fecha` en
+la cabecera no se puede acotar el periodo y la consulta se rechaza antes de
+ejecutarse.
