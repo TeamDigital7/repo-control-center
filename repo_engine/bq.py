@@ -341,11 +341,63 @@ def tipos(conn: Conexion, tabla: str) -> dict[str, str]:
     if tabla not in _TIPOS:
         try:
             cols = columnas(conn, tabla)
-            _TIPOS[tabla] = {str(c): str(t).upper() for c, t in
-                             zip(cols["column_name"], cols["data_type"])}
         except Exception:
             return {}
+        if not len(cols):
+            return {}        # no existe: no se guarda, se puede crear despues
+        _TIPOS[tabla] = {str(c): str(t).upper() for c, t in
+                         zip(cols["column_name"], cols["data_type"])}
     return _TIPOS[tabla]
+
+
+#: Tabla configurada -> tabla que si existe, cuando el nombre de los secrets no
+#: coincide pero hay una equivalente inequivoca en el proyecto.
+_REEMPLAZO: dict[str, str] = {}
+
+
+def tabla_configurada(tabla: str) -> str:
+    """El nombre que dicen los secrets para una tabla que se reemplazo."""
+    for antes, ahora in _REEMPLAZO.items():
+        if ahora == tabla:
+            return antes
+    return tabla
+
+
+def resolver_tabla(conn: Conexion, tabla: str, patron: str) -> str:
+    """Si `tabla` no existe, busca la equivalente y la usa en su lugar.
+
+    Pasa con nombres casi iguales (`stg_pe_central_pedidos_header` contra
+    `stg_pe_perucentral_pedidos_header`): se exige que termine igual (misma
+    cabecera o mismo detalle) y que se parezca claramente mas que cualquier
+    otra, para no cambiar a ciegas entre dos candidatas parecidas. Devuelve la
+    tabla a usar; si no hay candidata clara, la misma que llego.
+    """
+    from difflib import SequenceMatcher
+
+    if tipos(conn, tabla):
+        return tabla
+    try:
+        encontradas = buscar_tablas(conn, tabla, patron)
+    except Exception:
+        return tabla
+    if encontradas is None or not len(encontradas):
+        return tabla
+    proyecto, _dataset, nombre = tabla.split(".")
+    cola = "_".join(nombre.lower().split("_")[-2:])
+    puntajes = []
+    for esquema, t in zip(encontradas["table_schema"], encontradas["table_name"]):
+        if not str(t).lower().endswith(cola):
+            continue
+        puntajes.append((SequenceMatcher(None, nombre.lower(), str(t).lower()).ratio(),
+                         f"{proyecto}.{esquema}.{t}"))
+    puntajes.sort(reverse=True)
+    if not puntajes or puntajes[0][0] < 0.8:
+        return tabla
+    if len(puntajes) > 1 and puntajes[0][0] - puntajes[1][0] < 0.08:
+        return tabla
+    real = puntajes[0][1]
+    _REEMPLAZO[tabla] = real
+    return real
 
 
 def _fecha_sql(ref: str, tipo: str | None) -> str:
@@ -910,7 +962,7 @@ def _valida_tabla(tabla: str, etiqueta: str) -> str:
         raise RuntimeError(
             f"La tabla de {etiqueta} quedo con el texto de ejemplo: '{tabla}'. "
             f"Reemplaza proyecto y dataset por los de verdad en `{clave}`.")
-    return tabla
+    return _REEMPLAZO.get(tabla, tabla)
 
 
 def tabla_ped_header(cfg: dict | None = None) -> str:

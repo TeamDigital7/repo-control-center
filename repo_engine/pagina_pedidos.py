@@ -41,7 +41,10 @@ def _estado() -> None:
 def _mapa(conn, tabla: str, fuente: str) -> dict | None:
     """Mapeo guardado, o descubierto por alias contra INFORMATION_SCHEMA."""
     guardado = bq.cargar_mapeo().get(tabla)
-    if guardado and not bq.faltantes_pedidos(guardado, fuente):
+    # El mapeo guardado solo vale si la tabla existe: antes se mostraba
+    # "conectada" sobre una tabla que no estaba y la consulta no traia nada.
+    if (guardado and not bq.faltantes_pedidos(guardado, fuente)
+            and bq.tipos(conn, tabla)):
         return guardado
     try:
         cols = bq.columnas(conn, tabla)
@@ -56,6 +59,17 @@ def _mapa(conn, tabla: str, fuente: str) -> dict | None:
     detectado = bq.mapear(list(cols["column_name"]), bq.ALIAS_POR_FUENTE[fuente])
     # Lo guardado manda; la deteccion solo completa lo que le faltaba.
     return {**detectado, **(guardado or {})}
+
+
+def aviso_reemplazo(tabla: str, clave: str) -> None:
+    """Avisa, en cada carga, que se usa otra tabla que la de los secrets."""
+    antes = bq.tabla_configurada(tabla)
+    if antes == tabla:
+        return
+    issue_box("warn", f"Uso {tabla.split('.')[-1]}",
+              f"En los secrets dice `{antes.split('.')[-1]}`, que no existe. Estoy "
+              f"usando `{tabla}`, que es la equivalente. Para dejarlo fijo, cambia "
+              f"`{clave}` en los secrets por ese nombre.")
 
 
 def _no_existe(conn, tabla: str) -> None:
@@ -141,6 +155,11 @@ def panel_tablas(conn):
         return None, None
     # En gris hasta saber que existen: un check verde sobre una tabla que no
     # esta seria mentir en la parte que mas rapido se mira.
+    with st.spinner("Comprobando que las tablas existan…"):
+        t_h = bq.resolver_tabla(conn, t_h, "pedido")
+        t_d = bq.resolver_tabla(conn, t_d, "pedido")
+    for ahora, clave in ((t_h, "pedidos_header_table"), (t_d, "pedidos_detail_table")):
+        aviso_reemplazo(ahora, clave)
     chips([("idle", t_h.split(".")[-1]), ("idle", t_d.split(".")[-1])])
 
     m_h, m_d = _mapa(conn, t_h, "ped_header"), _mapa(conn, t_d, "ped_detail")

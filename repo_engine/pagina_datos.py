@@ -52,6 +52,9 @@ def panel_conexion() -> bq.Conexion | None:
     except RuntimeError as exc:
         issue_box("error", "Falta configurar la tabla de venta", str(exc))
         return None
+    tabla = bq.resolver_tabla(conn, tabla, "venta")
+    from .pagina_pedidos import aviso_reemplazo
+    aviso_reemplazo(tabla, "ventas_table")
     chips([("ok", f"Proyecto {conn.proyecto}"), ("ok", tabla.split(".")[-1])])
 
     mapa = (bq.cargar_mapeo().get(tabla) or st.session_state.get("bq_mapa"))
