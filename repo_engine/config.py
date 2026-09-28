@@ -207,6 +207,9 @@ REP_MODES = {
 }
 DEFAULT_REP_MODE = "vacio"
 
+#: `_origen` de las filas de DATA que vienen de lo ya enviado a la tienda.
+ORIGEN_EN_CAMINO = "en_camino"
+
 #: Modos que solo precargan la columna; el detalle siempre va a la hoja EN CAMINO.
 REP_PRELOAD_MODES = ("pendiente_recepcion", "despachado_no_recibido", "transito_bodega")
 

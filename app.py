@@ -55,6 +55,7 @@ def _state():
     st.session_state.setdefault("rep_mode", C.DEFAULT_REP_MODE)
     st.session_state.setdefault("incluir_data", False)
     st.session_state.setdefault("alerta_negativo", True)
+    st.session_state.setdefault("enviado_en_stk", True)
 
 
 def reset_downstream():
@@ -275,7 +276,8 @@ def render_process():
         t0 = time.perf_counter()
         try:
             with st.spinner("Cruzando venta, stock, CD y pedidos…"):
-                result = build(dfs, rep_mode=st.session_state["rep_mode"])
+                result = build(dfs, rep_mode=st.session_state["rep_mode"],
+                               enviado_en_stk=st.session_state["enviado_en_stk"])
             with st.spinner("Escribiendo el libro final con formulas y hojas de apoyo…"):
                 meta = dict(result.stats)
                 meta["generado"] = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -315,7 +317,9 @@ def render_result():
         ("Filas del REPO", fmt(s["filas"]), "SKU unicos (Modelo-Color-Talla)"),
         ("SKU resueltos", f"{s.get('sku_cobertura', 0):.0%}",
          f"{fmt(s.get('sku_desde_cd', 0))} del CD + {fmt(s.get('sku_desde_directorio', 0))} del directorio"),
-        ("Stock en tienda", fmt(s["unidades_stk"]), "columnas STK"),
+        ("Stock en tienda", fmt(s["unidades_stk"]),
+         f"incluye {fmt(s['enviado_en_stk'])} ya enviadas" if s.get("enviado_en_stk")
+         else "columnas STK"),
         ("En camino", fmt(s.get("en_camino_total", 0)), "pedidos que aun no llegan"),
     ])
 
@@ -556,6 +560,17 @@ def render_ajustes_repo():
             st.caption(C.REP_MODES[choice]["help"])
             if choice != st.session_state["rep_mode"]:
                 st.session_state["rep_mode"] = choice
+                reset_downstream()
+            enviado = st.checkbox(
+                "Sumar lo ya enviado al STK de la tienda",
+                value=st.session_state["enviado_en_stk"],
+                disabled=choice in C.REP_PRELOAD_MODES,
+                help=("Los pedidos Aprobados o Despachados que aun no llegan (Detallado x "
+                      "Evolucion) cuentan como stock de la tienda, para no volver a mandarlos. "
+                      "No aplica si REP ya viene precargado."))
+            if enviado != st.session_state["enviado_en_stk"]:
+                st.session_state["enviado_en_stk"] = enviado
+                st.session_state["tl_result"] = None
                 reset_downstream()
         with c2:
             st.markdown("**Libro de salida**")

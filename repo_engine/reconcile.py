@@ -102,13 +102,19 @@ def build_cuadre(repo: pd.DataFrame,
         )
     else:
         origen_stk = 0.0
+    # Lo ya enviado a la tienda entra al STK como una fuente mas (Detallado x Evolucion).
+    enviado_mask = data["_origen"].eq(C.ORIGEN_EN_CAMINO)
+    enviado = float(data.loc[enviado_mask, "STK"].sum())
     fuera_stk = float(data.loc[~data["_en_repo"], "STK"].sum())
-    excl_stk = origen_stk - float(data["STK"].sum())
+    excl_stk = origen_stk - float(data.loc[~enviado_mask, "STK"].sum())
+    detalle_stk = (f"{excl_stk:,.0f} de Clase DESPACHOS o sin codigo · "
+                   f"{fuera_stk:,.0f} en el CD 320 y tiendas sin columna en el REPO")
+    if enviado:
+        detalle_stk += f" · incluye {enviado:,.0f} unidades ya enviadas a tienda"
     cuadre.lineas.append(Linea(
         concepto="Stock disponible (STK)",
-        origen=origen_stk, en_repo=repo_stk, excluido=excl_stk + fuera_stk,
-        detalle=(f"{excl_stk:,.0f} de Clase DESPACHOS o sin codigo · "
-                 f"{fuera_stk:,.0f} en el CD 320 y tiendas sin columna en el REPO"),
+        origen=origen_stk + enviado, en_repo=repo_stk, excluido=excl_stk + fuera_stk,
+        detalle=detalle_stk,
     ))
 
     # ---------------- pedidos en camino ----------------
@@ -206,6 +212,7 @@ def build_cuadre(repo: pd.DataFrame,
             "VNT archivo": float(sub["VNT"].sum()),
             "VNT repo": float(np.nansum(v.to_numpy(dtype=float))) if v is not None else 0.0,
             "STK archivo": float(sub["STK"].sum()),
+            "STK enviado": float(sub.loc[sub["_origen"].eq(C.ORIGEN_EN_CAMINO), "STK"].sum()),
             "STK repo": float(np.nansum(s.to_numpy(dtype=float))) if s is not None else 0.0,
             "REP repo": float(np.nansum(r.to_numpy(dtype=float))) if r is not None else 0.0,
         })

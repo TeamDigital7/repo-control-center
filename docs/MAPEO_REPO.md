@@ -183,6 +183,12 @@ que ya viene en camino, cruzando `DETALLADO` con `EVOLUCION`:
 En **todos** los modos el detalle de lo que viene en camino se escribe en la hoja
 `EN CAMINO`, para consultarlo sin ensuciar la columna de captura.
 
+Con `REP` vacio (por defecto), esas mismas unidades (`pendiente_recepcion`) se
+**suman al `STK` de la tienda**: lo que ya salio o esta asignado cuenta como
+stock y no se vuelve a reponer. En el `CUADRE`, la linea STK lo muestra como
+"incluye N unidades ya enviadas" y por tienda como `STK enviado`. Si `REP` se
+precarga, no se suma al STK para no contarlo dos veces.
+
 ### 3.4 Aviso de sobre-reposicion (agregado)
 
 La plantilla original no tiene formato condicional. La app agrega una unica

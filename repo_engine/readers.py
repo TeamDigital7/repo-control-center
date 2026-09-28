@@ -74,6 +74,30 @@ def clean_text_series(s: pd.Series) -> pd.Series:
     return out
 
 
+def normalize_pedido(s: pd.Series) -> pd.Series:
+    """Numero de pedido comparable entre EVOLUCION y DETALLADO.
+
+    Un export lo trae como texto (`'0001068125`) y el otro como numero
+    (`1068125.0`); sin esto el cruce por pedido falla en silencio y lo ya
+    enviado no suma ni al STK ni a la hoja EN CAMINO.
+    """
+    out = clean_text_series(s)
+    out = out.str.replace(r"\.0+$", "", regex=True)
+    digitos = out.str.fullmatch(r"\d+", na=False)
+    out = out.mask(digitos, out.str.lstrip("0").replace("", "0"))
+    return out.str.upper()
+
+
+def extract_store_code(s: pd.Series) -> pd.Series:
+    """`008 HP JOCKEY`, `008-HP JOCKEY` o `8` -> `8`.
+
+    Los clientes mayoristas traen RUC de 11-12 digitos y quedan sin tienda.
+    """
+    from .catalogs import normalize_store_code
+    cod = s.astype("string").str.extract(r"^\s*(\d{1,4})(?:\.0)?(?!\d)")[0]
+    return cod.map(lambda v: normalize_store_code(v) if pd.notna(v) else pd.NA)
+
+
 def to_num(s: pd.Series) -> pd.Series:
     """Convierte a numero tolerando separadores de miles y comas decimales."""
     if pd.api.types.is_numeric_dtype(s):
@@ -115,6 +139,18 @@ def _normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
 # lectores genericos
 # ---------------------------------------------------------------------------
 
+def _read_excel(raw: bytes, xlsb: bool = False) -> pd.DataFrame:
+    """Excel como texto. Calamine (Rust) lee 5-10x mas rapido que openpyxl."""
+    engines = ["calamine"] + (["pyxlsb"] if xlsb else ["openpyxl"])
+    ultimo = None
+    for engine in engines:
+        try:
+            return pd.read_excel(io.BytesIO(raw), dtype=str, engine=engine)
+        except (ImportError, ValueError) as exc:
+            ultimo = exc
+    raise ultimo
+
+
 def read_any(file_obj, filename: str = "") -> pd.DataFrame:
     """Lee txt/csv/xlsx/xlsb devolviendo todo como texto."""
     name = (filename or getattr(file_obj, "name", "") or "").lower()
@@ -122,12 +158,15 @@ def read_any(file_obj, filename: str = "") -> pd.DataFrame:
     if name.endswith((".txt", ".csv", ".tsv")):
         text = _decode(raw)
         sep = _sniff_delimiter(text[:8000])
-        df = pd.read_csv(io.StringIO(text), sep=sep, dtype=str, engine="python",
-                         skip_blank_lines=True, on_bad_lines="skip")
-    elif name.endswith(".xlsb"):
-        df = pd.read_excel(io.BytesIO(raw), dtype=str, engine="pyxlsb")
+        # Con el separador ya detectado, el motor C lee ~10x mas rapido que el de Python.
+        try:
+            df = pd.read_csv(io.StringIO(text), sep=sep, dtype=str, engine="c",
+                             skip_blank_lines=True, on_bad_lines="skip", quotechar='"')
+        except (pd.errors.ParserError, ValueError):
+            df = pd.read_csv(io.StringIO(text), sep=sep, dtype=str, engine="python",
+                             skip_blank_lines=True, on_bad_lines="skip")
     else:
-        df = pd.read_excel(io.BytesIO(raw), dtype=str)
+        df = _read_excel(raw, xlsb=name.endswith(".xlsb"))
     return _normalize_headers(df)
 
 
@@ -238,7 +277,7 @@ def read_evolucion(file_obj, filename: str = "") -> LoadResult:
     notes: list[str] = []
     df = _drop_total_rows(df, notes)
 
-    df["Nro. Pedido"] = clean_text_series(df["Nro. Pedido"])
+    df["Nro. Pedido"] = normalize_pedido(df["Nro. Pedido"])
     for col in ("Estado", "Clasificacion", "Destino", "Canal", "Bodega origen"):
         if col in df.columns:
             df[col] = clean_text_series(df[col])
@@ -272,7 +311,8 @@ def read_detallado(file_obj, filename: str = "") -> LoadResult:
     notes: list[str] = []
     df = _drop_total_rows(df, notes)
 
-    for col in ("Numero Pedido", "Tienda / Cliente", "Cod. Modelo", "Cod. Color",
+    df["Numero Pedido"] = normalize_pedido(df["Numero Pedido"])
+    for col in ("Tienda / Cliente", "Cod. Modelo", "Cod. Color",
                 "Talla / Numero", "Clasificacion", "Modelo", "Color", "Clase", "Marca"):
         if col in df.columns:
             df[col] = clean_text_series(df[col])
@@ -281,8 +321,7 @@ def read_detallado(file_obj, filename: str = "") -> LoadResult:
 
     df["LLAVE"] = build_llave(df["Cod. Modelo"], df["Cod. Color"], df["Talla / Numero"])
     # "008 HP JOCKEY" -> codigo 8 ; los clientes mayoristas traen RUC de 11-12 digitos.
-    cod = df["Tienda / Cliente"].astype("string").str.extract(r"^\s*(\d{1,4})\s+\S")[0]
-    df["_tienda_key"] = cod.map(lambda v: _norm_code(v) if pd.notna(v) else pd.NA)
+    df["_tienda_key"] = extract_store_code(df["Tienda / Cliente"])
     sin_tienda = df["_tienda_key"].isna().sum()
     if sin_tienda:
         notes.append(

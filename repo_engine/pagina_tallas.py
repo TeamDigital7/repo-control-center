@@ -14,7 +14,7 @@ import streamlit as st
 import xlsxwriter
 
 from . import tallas as motor
-from .transform import build_data
+from .transform import build_data, build_rep_matrix, sumar_en_camino
 from .catalogs import load_catalogs
 from . import config as C
 from .ui import chips, issue_box, kpi_row, section
@@ -32,9 +32,11 @@ def _analisis():
     cargados = st.session_state.get("loaded", {})
     if C.SRC_BODEGA not in cargados:
         return None
+    fuentes = (C.SRC_BODEGA, C.SRC_VTA, C.SRC_DETALLADO, C.SRC_EVOLUCION)
     sig = tuple(sorted((s, getattr(r, "_sig", None)) for s, r in cargados.items()
-                       if s in (C.SRC_BODEGA, C.SRC_VTA)))
-    sig = (sig, st.session_state.get("tl_umbral", motor.UMBRAL_CRITICO))
+                       if s in fuentes))
+    enviado = st.session_state.get("enviado_en_stk", True)
+    sig = (sig, st.session_state.get("tl_umbral", motor.UMBRAL_CRITICO), enviado)
     if st.session_state.get("tl_sig") == sig and st.session_state.get("tl_result") is not None:
         return st.session_state["tl_result"]
 
@@ -43,6 +45,12 @@ def _analisis():
     bod = cargados[C.SRC_BODEGA].df
     with st.spinner("Analizando la curva de tallas por tienda…"):
         data, _ = build_data(vta, bod, cat)
+        # Lo ya enviado a la tienda completa su curva: esa talla no esta rota.
+        if enviado and C.SRC_DETALLADO in cargados:
+            evo = cargados[C.SRC_EVOLUCION].df if C.SRC_EVOLUCION in cargados else None
+            en_camino, _ = build_rep_matrix(cargados[C.SRC_DETALLADO].df, evo,
+                                            mode="pendiente_recepcion", catalogs=cat)
+            data = sumar_en_camino(data, en_camino)
         res = motor.analizar(data, cat,
                              umbral_critico=st.session_state.get("tl_umbral",
                                                                  motor.UMBRAL_CRITICO))

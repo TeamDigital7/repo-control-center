@@ -35,6 +35,9 @@ ATTR_SOURCES = {
 }
 
 
+#: Los mismos atributos, leidos desde el DETALLADO de pedidos.
+DET_ATTR_SOURCES = dict(ATTR_SOURCES, **{"Talla/Numero": "Talla / Numero"})
+
 #: Los mismos atributos, leidos desde STOCK CD (ahi la talla cambia de nombre).
 CD_ATTR_SOURCES = dict(ATTR_SOURCES, **{"Talla/Numero": "Talla/Nro/Curva Tarea"})
 
@@ -126,6 +129,30 @@ def build_data(vta: pd.DataFrame, bodega: pd.DataFrame, catalogs: Catalogs | Non
 # 2. columna REP (pedidos en camino)
 # ---------------------------------------------------------------------------
 
+def normalize_estado(estado: pd.Series) -> pd.Series:
+    """`DESPACHADO`, `despachada`, `Despachado parcial` -> `Despachado`.
+
+    El ERP y el datalake no escriben el estado igual; comparar el texto exacto
+    dejaba fuera pedidos ya enviados. Lo recepcionado, anulado o cerrado ya no
+    esta en camino y queda con su texto original.
+    """
+    import unicodedata
+
+    def plano(v):
+        if pd.isna(v):
+            return ""
+        txt = unicodedata.normalize("NFKD", str(v))
+        return "".join(c for c in txt if not unicodedata.combining(c)).upper()
+
+    txt = estado.astype("object").map(plano)
+    cerrado = txt.str.contains(r"RECEP|ANUL|CERRAD|RECHAZ|CANCEL|ELIMIN", na=False)
+    out = estado.astype("object").copy()
+    out[~cerrado & txt.str.contains("DESPACH", na=False)] = "Despachado"
+    out[~cerrado & txt.str.contains("APROB", na=False)
+        & ~txt.str.contains("DESPACH", na=False)] = "Aprobado"
+    return out
+
+
 def build_rep_matrix(detallado: pd.DataFrame,
                      evolucion: pd.DataFrame,
                      mode: str = C.DEFAULT_REP_MODE,
@@ -158,7 +185,7 @@ def build_rep_matrix(detallado: pd.DataFrame,
     if evolucion is not None and not evolucion.empty:
         estado = (evolucion.drop_duplicates("Nro. Pedido")
                   .set_index("Nro. Pedido")["Estado"])
-        det["_estado"] = det["Numero Pedido"].map(estado)
+        det["_estado"] = normalize_estado(det["Numero Pedido"].map(estado))
     else:
         det["_estado"] = pd.NA
         notes.append("Sin Evolucion: no se pudo filtrar por estado de pedido.")
@@ -186,9 +213,50 @@ def build_rep_matrix(detallado: pd.DataFrame,
         sub = sub.loc[~fuera]
 
     total = float(sub["REP"].sum())
-    notes.append(f"REP: {total:,.0f} unidades en camino en {sub['_tienda_key'].nunique()} tiendas.")
-    out = sub.groupby(["LLAVE", "_tienda_key"], as_index=False)["REP"].sum()
+    notes.append(f"{total:,.0f} unidades ya enviadas o asignadas a {sub['_tienda_key'].nunique()} "
+                 "tiendas que aun no aparecen en su stock.")
+    # Atributos del producto para los SKU que la tienda todavia no tiene.
+    attrs = [c for c in DET_ATTR_SOURCES.values() if c in sub.columns]
+    out = sub.groupby(["LLAVE", "_tienda_key"], as_index=False).agg(
+        REP=("REP", "sum"), **{c: (c, "first") for c in attrs})
     return out, notes
+
+
+def data_en_camino(en_camino: pd.DataFrame | None) -> pd.DataFrame:
+    """Lo ya enviado a cada tienda, con la forma de la hoja DATA.
+
+    Suma al STK de la tienda: si ya salio del CD (o esta asignado) no hay que
+    volver a mandarlo. Tambien da fila a los SKU que la tienda aun no tiene.
+    """
+    if en_camino is None or en_camino.empty:
+        return pd.DataFrame()
+    out = pd.DataFrame(index=en_camino.index)
+    for dest, src in DET_ATTR_SOURCES.items():
+        out[dest] = en_camino[src] if src in en_camino.columns else pd.NA
+    out["LLAVE"] = en_camino["LLAVE"]
+    out["_tienda_key"] = en_camino["_tienda_key"]
+    out["Nombre Tienda"] = pd.NA
+    out["VNT"] = 0.0
+    out["Stock"] = 0.0
+    out["Transito"] = 0.0
+    out["STK"] = en_camino["REP"].astype(float)
+    out["_origen"] = C.ORIGEN_EN_CAMINO
+    out["_en_repo"] = True
+    out["Temporada Comercial"] = out["Temporada Comercial"].astype("string").fillna(C.BLANK_LABEL)
+    return out.reset_index(drop=True)
+
+
+def sumar_en_camino(data: pd.DataFrame, en_camino: pd.DataFrame | None) -> pd.DataFrame:
+    extra = data_en_camino(en_camino)
+    if extra.empty:
+        return data
+    # Si la tienda o la venta ya conocen el SKU, se usa su descripcion: asi la
+    # misma talla no se parte en dos por una diferencia de mayusculas.
+    conocidos = data.drop_duplicates("LLAVE").set_index("LLAVE")[list(ATTR_SOURCES)]
+    ya = extra["LLAVE"].isin(conocidos.index)
+    if ya.any():
+        extra.loc[ya, list(ATTR_SOURCES)] = conocidos.loc[extra.loc[ya, "LLAVE"]].to_numpy()
+    return pd.concat([data, extra.reindex(columns=data.columns)], ignore_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +369,8 @@ def build_repo(data: pd.DataFrame,
     ordered = data.assign(_prio=prio).sort_values("_prio", kind="mergesort")
     attrs = ordered.groupby("LLAVE", sort=False)[list(ATTR_SOURCES)].first()
 
-    conflictos = (ordered.groupby("LLAVE")[["Modelo", "Color", "Temporada Comercial"]]
+    propias = ordered.loc[ordered["_origen"] != C.ORIGEN_EN_CAMINO]
+    conflictos = (propias.groupby("LLAVE")[["Modelo", "Color", "Temporada Comercial"]]
                   .nunique().max(axis=1))
     n_conf = int((conflictos > 1).sum())
     if n_conf:
@@ -412,7 +481,8 @@ def build_repo(data: pd.DataFrame,
 
 def build(loaded: dict[str, pd.DataFrame],
           rep_mode: str = C.DEFAULT_REP_MODE,
-          sku_dir: dict[str, str] | None = None) -> BuildResult:
+          sku_dir: dict[str, str] | None = None,
+          enviado_en_stk: bool = True) -> BuildResult:
     from .diagnostics import collect_issues
     from .reconcile import build_cuadre
     from . import sku_directory
@@ -438,15 +508,26 @@ def build(loaded: dict[str, pd.DataFrame],
     )
     notes += n2
 
+    stats_envio = 0.0
     if rep_mode in C.REP_PRELOAD_MODES:
         rep_long = en_camino
         notes.append("Las columnas REP quedaron precargadas con los pedidos en camino.")
+        if enviado_en_stk:
+            notes.append("Lo enviado no se sumo al STK porque ya esta precargado en REP "
+                         "(se contaria dos veces).")
     else:
         rep_long = None
         notes.append(
             "Las columnas REP quedaron vacias para que las llenes: REPOSICIÓN suma "
             "lo que escribas y NVO DSP CD descuenta del disponible del CD."
         )
+        if enviado_en_stk and not en_camino.empty:
+            data = sumar_en_camino(data, en_camino)
+            stats_envio = float(en_camino["REP"].sum())
+            notes.append(
+                f"Se sumaron {stats_envio:,.0f} unidades ya enviadas (Detallado x Evolucion) "
+                "al STK de cada tienda, para no volver a reponerlas."
+            )
 
     repo, stats, n3 = build_repo(data, loaded[C.SRC_CD], rep_long, catalogs, sku_dir)
     notes += n3
@@ -456,6 +537,7 @@ def build(loaded: dict[str, pd.DataFrame],
     stats["rep_mode"] = rep_mode
     stats["cuadra"] = cuadre.cuadra
     stats["en_camino_total"] = float(en_camino["REP"].sum()) if not en_camino.empty else 0.0
+    stats["enviado_en_stk"] = stats_envio
     stats["sku_directorio"] = len(sku_dir)
     return BuildResult(repo=repo, data=data, catalogs=catalogs,
                        stats=stats, issues=issues, notes=notes,

@@ -947,7 +947,8 @@ def a_formato_evolucion(df: pd.DataFrame) -> pd.DataFrame:
     out = df.rename(columns=renombra).copy()
     if "Nro. Pedido" not in out.columns:
         raise RuntimeError("La cabecera no trae el numero de pedido mapeado.")
-    out["Nro. Pedido"] = _texto(out["Nro. Pedido"])
+    from .readers import normalize_pedido
+    out["Nro. Pedido"] = normalize_pedido(_texto(out["Nro. Pedido"]))
     for col in ("Estado", "Clasificacion", "Destino", "Canal", "Bodega origen"):
         if col in out.columns:
             out[col] = _texto(out[col])
@@ -966,7 +967,7 @@ def a_formato_detallado(df: pd.DataFrame) -> pd.DataFrame:
     parte el resto de la app.
     """
     from .catalogs import normalize_store_code
-    from .readers import build_llave
+    from .readers import build_llave, extract_store_code, normalize_pedido
 
     renombra = {
         "nro_pedido": "Numero Pedido", "fecha": "Fecha Pedido",
@@ -985,6 +986,7 @@ def a_formato_detallado(df: pd.DataFrame) -> pd.DataFrame:
                 "Barra"):
         if col in out.columns:
             out[col] = _texto(out[col])
+    out["Numero Pedido"] = normalize_pedido(out["Numero Pedido"])
 
     cod = _texto(out["tienda_cod"]) if "tienda_cod" in out.columns else None
     nombre = _texto(out["tienda_nombre"]) if "tienda_nombre" in out.columns else None
@@ -1002,10 +1004,7 @@ def a_formato_detallado(df: pd.DataFrame) -> pd.DataFrame:
                                      if pd.notna(v) else pd.NA)
     else:
         # Mismo camino que el lector del Excel: "008 HP JOCKEY" -> 8.
-        extraido = out["Tienda / Cliente"].astype("string").str.extract(
-            r"^\s*(\d{1,4})\s+\S")[0]
-        out["_tienda_key"] = extraido.map(lambda v: normalize_store_code(v)
-                                          if pd.notna(v) else pd.NA)
+        out["_tienda_key"] = extract_store_code(out["Tienda / Cliente"])
 
     for col in ("Unid. Pedidas", "Unid. Despachadas", "Unid. Pendientes"):
         out[col] = (pd.to_numeric(out[col], errors="coerce").fillna(0.0)

@@ -76,6 +76,12 @@ Ver [`docs/EFECTIVIDAD.md`](docs/EFECTIVIDAD.md).
 * **Ejecuta todos los cruces**: apila venta + bodega, calcula
   `STK = Stock − Transito − Reserva eC. − Merma − 2da calidad`, pivotea por las
   69 tiendas y arma los BUSCARV contra `STOCK CD`.
+* **Cuenta lo ya enviado como stock de la tienda**: los pedidos del `DETALLADO`
+  que segun `EVOLUCION` siguen *Aprobados* o *Despachados* (aun no recepcionados)
+  se suman al `STK` de su tienda, asi no se vuelven a reponer. Si el SKU todavia
+  no existe en la tienda, aparece como fila nueva. Se puede apagar en *Ajustes*.
+  El cruce por pedido tolera ceros a la izquierda, `.0` de Excel y estados en
+  mayusculas o sin tilde.
 * **Entrega un libro vivo, no un volcado**: la hoja `REPO` sale con sus formulas,
   sus hojas de apoyo y sus rangos con nombre, asi que al escribir en `REP` la
   columna `REPOSICIÓN` suma y `NVO DSP CD` descuenta el disponible del CD.
@@ -249,7 +255,7 @@ pedidos):
 
 | Etapa | Tiempo |
 |---|---|
-| Lectura de los 5 archivos | ~16 s |
+| Lectura de los 5 archivos | ~16 s antes; ahora 4-7x mas rapida (calamine + lector C de pandas) |
 | Cruces, pivote y cuadre | ~4 s |
 | Escritura del libro con formulas (30.493 x 226) | ~65 s |
 

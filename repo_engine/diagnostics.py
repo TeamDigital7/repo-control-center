@@ -155,7 +155,7 @@ def collect_issues(repo: pd.DataFrame,
                 title="Pedidos a tienda sin estado en Evolucion",
                 detail=(
                     f"{falta['Numero Pedido'].nunique():,} pedidos dirigidos a tiendas del REPO "
-                    "no aparecen en Evolucion, por lo que no suman a la columna REP."
+                    "no aparecen en Evolucion, por lo que no suman al STK de la tienda ni a EN CAMINO."
                 ),
                 count=int(falta["Numero Pedido"].nunique()),
                 sample=(falta.groupby(["Numero Pedido", "Tienda / Cliente"], as_index=False)
