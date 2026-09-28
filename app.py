@@ -16,7 +16,7 @@ from repo_engine import config as C
 from repo_engine.auth import logout, require_login
 from repo_engine.catalogs import load_catalogs
 from repo_engine.excel_writer import write_workbook
-from repo_engine import (bq, pagina_datos, pagina_efectividad, pagina_inicio,
+from repo_engine import (bq, carga_bq, pagina_efectividad, pagina_inicio,
                          pagina_llenado, pagina_pedidos, pagina_tallas,
                          sku_directory)
 from repo_engine.readers import detect_source, read_any, read_source
@@ -66,147 +66,24 @@ def reset_downstream():
 # paso 1 y 2: carga + validacion
 # ---------------------------------------------------------------------------
 
-def render_venta_bigquery():
-    """La venta se puede traer del datalake en vez de subir el TXT."""
-    conn = pagina_datos.panel_conexion()
-    if conn is None:
-        return False
-    desde, hasta, max_gb = pagina_datos.selector_periodo("repo")
-    if st.button("Traer venta de BigQuery", type="primary", width="stretch",
-                 key="bq_traer_repo"):
-        df = pagina_datos.traer_ventas(conn, desde, hasta, max_gb, diaria=False)
-        if df is not None:
-            from repo_engine.readers import LoadResult
-            vta = bq.a_formato_vta(df)
-            res = LoadResult(source=C.SRC_VTA, df=vta, rows_raw=len(vta),
-                             notes=[f"Venta traida de BigQuery del {desde:%d/%m/%Y} "
-                                    f"al {hasta:%d/%m/%Y}."])
-            res._sig = ("bigquery", desde, hasta)
-            res._filename = f"BigQuery {desde:%d-%m-%Y} a {hasta:%d-%m-%Y}"
-            st.session_state["loaded"][C.SRC_VTA] = res
-            st.session_state["reports"][C.SRC_VTA] = validate_source(C.SRC_VTA, vta)
-            reset_downstream()
-            st.rerun()
-    _feedback_bigquery(C.SRC_VTA)
-    return True
-
-
-def _feedback_bigquery(source: str) -> None:
-    """Lo traido de BigQuery se muestra igual que un archivo subido.
-
-    Sin esto, despues del rerun no quedaba nada en pantalla y parecia que el
-    boton no habia hecho nada.
-    """
-    res = st.session_state["loaded"].get(source)
-    if res is None or getattr(res, "_sig", (None,))[0] != "bigquery":
-        return
-    st.markdown(f"**{C.SOURCE_META[source]['label']}** · {res._filename}")
-    _render_slot_feedback(source)
-
-
-def render_pedidos_bigquery():
-    """El Detallado y la Evolucion tambien salen del datalake.
-
-    Son las dos fuentes que alimentan la columna REP: la cabecera aporta el
-    estado del pedido y el detalle las unidades por SKU y tienda.
-    """
-    from repo_engine.readers import LoadResult
-
-    conn = bq.cliente(bq.config())
-    if not conn.ok:
-        issue_box("error", "No se pudo conectar", conn.detalle)
-        return False
-    m_h, m_d = pagina_pedidos.panel_tablas(conn)
-    if m_h is None:
-        return True
-
-    desde, hasta, max_gb = pagina_datos.selector_periodo(
-        "pedidos", "Periodo de pedidos")
-    if st.button("Traer pedidos de BigQuery", type="primary", width="stretch",
-                 key="bq_traer_pedidos"):
-        cfg = bq.config()
-        try:
-            with st.spinner("Consultando BigQuery…"):
-                cab, gb1 = bq.ped_header(conn, m_h, bq.tabla_ped_header(cfg),
-                                         desde, hasta, max_gb)
-                det, gb2 = bq.ped_detail(conn, m_d, bq.tabla_ped_detail(cfg),
-                                         desde, hasta, m_h,
-                                         bq.tabla_ped_header(cfg), max_gb)
-        except RuntimeError as exc:
-            issue_box("warn", "Consulta demasiado grande", str(exc))
-            return True
-        except Exception as exc:
-            issue_box("error", "Fallo la consulta", bq.explica_error(exc))
-            with st.expander("Detalle tecnico"):
-                st.code(traceback.format_exc())
-            return True
-
-        st.session_state["gb_pedidos"] = gb1 + gb2
-        if not len(cab) or not len(det):
-            # Sin rerun: el aviso de por que vino vacio tiene que quedar a la vista.
-            pagina_pedidos._porque_vacio(conn, m_h, m_d, desde, hasta,
-                                         len(cab), len(det))
-            return True
-
-        periodo = f"del {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}"
-        for source, frame, nota in (
-            (C.SRC_EVOLUCION, bq.a_formato_evolucion(cab),
-             f"Cabecera de pedidos traida de BigQuery {periodo}."),
-            (C.SRC_DETALLADO, bq.a_formato_detallado(det),
-             f"Detalle de pedidos traido de BigQuery {periodo}."),
-        ):
-            notas = [nota]
-            if source == C.SRC_DETALLADO and "LLAVE" in frame and \
-                    frame["LLAVE"].astype("string").str.fullmatch(r"-*-").all():
-                notas.append("El detalle no trae modelo, color ni talla y no se pudo "
-                             "completar con el maestro de productos: la LLAVE queda "
-                             "vacia. Configura `product_master_table` en los secrets.")
-            res = LoadResult(source=source, df=frame, rows_raw=len(frame),
-                             notes=notas)
-            res._sig = ("bigquery", desde, hasta)
-            res._filename = f"BigQuery {desde:%d-%m-%Y} a {hasta:%d-%m-%Y}"
-            st.session_state["loaded"][source] = res
-            st.session_state["reports"][source] = validate_source(source, frame)
-        reset_downstream()
-        st.rerun()
-
-    if st.session_state.get("gb_pedidos"):
-        st.caption(f"Ultima consulta: {st.session_state['gb_pedidos']:.2f} GB leidos.")
-    for source in (C.SRC_EVOLUCION, C.SRC_DETALLADO):
-        _feedback_bigquery(source)
-    return True
-
-
 def render_uploads():
     section("Carga los archivos fuente", "Se validan al vuelo; si subes uno en la "
             "casilla equivocada la app lo detecta por su estructura", "upload")
 
-    origen = st.session_state.get("origen_venta", "archivo")
+    desde_bq: set[str] = set()
     if bq.disponible():
         origen = st.radio(
-            "Origen de la venta", ["archivo", "bigquery"],
-            format_func=lambda o: ("Subir el TXT de venta" if o == "archivo"
-                                   else "Traer de BigQuery por rango de fechas"),
-            horizontal=True, key="origen_venta", label_visibility="collapsed")
-    if origen == "bigquery":
-        with st.container(border=True):
-            render_venta_bigquery()
+            "De donde salen la venta y los pedidos",
+            ["bigquery", "archivo"],
+            format_func=lambda o: ("Traer de BigQuery (automatico)" if o == "bigquery"
+                                   else "Subir los archivos"),
+            horizontal=True, key="origen_datos")
+        if origen == "bigquery":
+            with st.container(border=True):
+                carga_bq.render()
+            desde_bq = {C.SRC_VTA, C.SRC_EVOLUCION, C.SRC_DETALLADO}
+            st.caption("Sube abajo lo que no sale de BigQuery:")
 
-    origen_ped = st.session_state.get("origen_pedidos", "archivo")
-    if bq.disponible():
-        origen_ped = st.radio(
-            "Origen de los pedidos", ["archivo", "bigquery"],
-            format_func=lambda o: ("Subir el Detallado y la Evolucion"
-                                   if o == "archivo"
-                                   else "Traer de BigQuery por rango de fechas"),
-            horizontal=True, key="origen_pedidos", label_visibility="collapsed")
-    if origen_ped == "bigquery":
-        with st.container(border=True):
-            render_pedidos_bigquery()
-
-    desde_bq = {C.SRC_VTA} if origen == "bigquery" else set()
-    if origen_ped == "bigquery":
-        desde_bq |= {C.SRC_DETALLADO, C.SRC_EVOLUCION}
     fuentes = [s for s in C.SOURCE_ORDER if s not in desde_bq]
     slots = []
     for start in range(0, len(fuentes), 2):

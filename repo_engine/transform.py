@@ -126,6 +126,25 @@ def build_data(vta: pd.DataFrame, bodega: pd.DataFrame, catalogs: Catalogs | Non
 # 2. columna REP (pedidos en camino)
 # ---------------------------------------------------------------------------
 
+def estado_canonico(valor):
+    """`APROBADO`, `aprobado` o `Aprobada` cuentan como Aprobado; igual Despachado.
+
+    El Excel trae `Aprobado`/`Despachado`, pero la tabla del ERP puede traerlo
+    en mayusculas o con otra terminacion; comparado tal cual, ningun pedido
+    coincidia y la REP quedaba en cero.
+    """
+    if pd.isna(valor):
+        return pd.NA
+    import unicodedata
+    txt = unicodedata.normalize("NFKD", str(valor)).encode("ascii", "ignore").decode()
+    txt = txt.strip().upper()
+    if txt.startswith("APROB"):
+        return "Aprobado"
+    if txt.startswith("DESPACH"):
+        return "Despachado"
+    return str(valor).strip()
+
+
 def build_rep_matrix(detallado: pd.DataFrame,
                      evolucion: pd.DataFrame,
                      mode: str = C.DEFAULT_REP_MODE,
@@ -158,7 +177,7 @@ def build_rep_matrix(detallado: pd.DataFrame,
     if evolucion is not None and not evolucion.empty:
         estado = (evolucion.drop_duplicates("Nro. Pedido")
                   .set_index("Nro. Pedido")["Estado"])
-        det["_estado"] = det["Numero Pedido"].map(estado)
+        det["_estado"] = det["Numero Pedido"].map(estado).map(estado_canonico)
     else:
         det["_estado"] = pd.NA
         notes.append("Sin Evolucion: no se pudo filtrar por estado de pedido.")
