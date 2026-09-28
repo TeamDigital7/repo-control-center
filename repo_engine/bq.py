@@ -1182,9 +1182,15 @@ def a_formato_detallado(df: pd.DataFrame) -> pd.DataFrame:
         out["_tienda_key"] = extraido.map(lambda v: normalize_store_code(v)
                                           if pd.notna(v) else pd.NA)
 
+    trae_pendientes = "Unid. Pendientes" in out.columns
     for col in ("Unid. Pedidas", "Unid. Despachadas", "Unid. Pendientes"):
         out[col] = (pd.to_numeric(out[col], errors="coerce").fillna(0.0)
                     if col in out.columns else 0.0)
+    if not trae_pendientes:
+        # La tabla no trae pendientes (no hay canpen_pd): sin esto quedaban en 0
+        # y los pedidos Aprobados no sumaban nada a la REP.
+        out["Unid. Pendientes"] = (out["Unid. Pedidas"]
+                                   - out["Unid. Despachadas"]).clip(lower=0)
 
     for col in ("Cod. Modelo", "Cod. Color", "Talla / Numero"):
         if col not in out.columns:
