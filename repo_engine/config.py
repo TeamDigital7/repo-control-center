@@ -186,7 +186,9 @@ REP_MODES = {
         "label": "Vacia, para llenar a mano (igual que la plantilla)",
         "help": (
             "REP es tu columna de captura. Al escribir, REPOSICIÓN suma y "
-            "NVO DSP CD descuenta del disponible del CD automaticamente."
+            "NVO DSP CD descuenta del disponible del CD automaticamente. Lo que ya "
+            "viene en camino (pedidos Aprobados o Despachados) se suma al STK de "
+            "cada tienda."
         ),
     },
     "pendiente_recepcion": {

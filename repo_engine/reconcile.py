@@ -102,12 +102,16 @@ def build_cuadre(repo: pd.DataFrame,
         )
     else:
         origen_stk = 0.0
+    # Lo en camino se suma al STK de la tienda: entra al origen para cuadrar.
+    camino_stk = float(data.loc[data["_origen"].eq("en_camino"), "STK"].sum())
+    origen_stk += camino_stk
     fuera_stk = float(data.loc[~data["_en_repo"], "STK"].sum())
     excl_stk = origen_stk - float(data["STK"].sum())
     cuadre.lineas.append(Linea(
         concepto="Stock disponible (STK)",
         origen=origen_stk, en_repo=repo_stk, excluido=excl_stk + fuera_stk,
-        detalle=(f"{excl_stk:,.0f} de Clase DESPACHOS o sin codigo · "
+        detalle=(f"incluye {camino_stk:,.0f} en camino · "
+                 f"{excl_stk:,.0f} de Clase DESPACHOS o sin codigo · "
                  f"{fuera_stk:,.0f} en el CD 320 y tiendas sin columna en el REPO"),
     ))
 

@@ -219,8 +219,10 @@ def build_rep_matrix(detallado: pd.DataFrame,
         estado = (evolucion.assign(_k=nro_pedido(evolucion["Nro. Pedido"]))
                   .drop_duplicates("_k").set_index("_k")["Estado"])
         det["_estado"] = det["_k"].map(estado).map(estado_canonico)
-        cuenta = det.drop_duplicates("_k")["_estado"].fillna("(sin estado)").value_counts()
-        notes.append("Pedidos por estado: " + " · ".join(
+        a_tiendas = det[det["_tienda_key"].isin(set(catalogs.by_key))]
+        cuenta = (a_tiendas.drop_duplicates("_k")["_estado"].fillna("(sin estado)")
+                  .value_counts())
+        notes.append("Pedidos a tiendas del REPO por estado: " + " · ".join(
             f"{k} {v:,}" for k, v in cuenta.items()) +
             ". Solo Aprobado y Despachado suman a la REP.")
     else:
@@ -354,6 +356,47 @@ def _filas_solo_cd(cd: pd.DataFrame, llaves: set) -> tuple[pd.DataFrame, list[st
         "su disponible no quede fuera de la reposicion."
     ]
     return out.reset_index(drop=True)[["LLAVE"] + list(ATTR_SOURCES)], notes
+
+
+#: Atributos del Detallado de pedidos, con sus nombres de columna.
+DET_ATTR_SOURCES = dict(ATTR_SOURCES, **{"Talla/Numero": "Talla / Numero"})
+
+
+def sumar_en_camino(data: pd.DataFrame, en_camino: pd.DataFrame,
+                    detallado: pd.DataFrame | None) -> pd.DataFrame:
+    """Suma al STK de cada tienda lo que ya viene en camino.
+
+    Un pedido Aprobado o Despachado todavia no figura en el stock de la tienda
+    (el archivo de bodega solo lo cuenta al recepcionar), y sin esto la tabla
+    mostraba la tienda sin stock y el planner le volvia a reponer lo mismo.
+    Se agrega como filas propias de la hoja DATA (`_origen = en_camino`) para
+    que quede auditable. Al recepcionarse, el pedido pasa a Recepcionado, sale
+    del calculo y entra por el archivo de bodega: no se cuenta dos veces.
+    """
+    if en_camino is None or en_camino.empty:
+        return data
+    filas = en_camino[["LLAVE", "_tienda_key", "REP"]].copy()
+    if detallado is not None and not detallado.empty:
+        attrs = pd.DataFrame({dest: detallado[src] if src in detallado.columns else pd.NA
+                              for dest, src in DET_ATTR_SOURCES.items()})
+        attrs["LLAVE"] = detallado["LLAVE"]
+        attrs = attrs.drop_duplicates("LLAVE").set_index("LLAVE")
+        for dest in ATTR_SOURCES:
+            filas[dest] = filas["LLAVE"].map(attrs[dest])
+    else:
+        for dest in ATTR_SOURCES:
+            filas[dest] = pd.NA
+    filas["Temporada Comercial"] = (filas["Temporada Comercial"].astype("string")
+                                    .fillna(C.BLANK_LABEL))
+    filas["Nombre Tienda"] = pd.NA
+    filas["VNT"] = 0.0
+    filas["Stock"] = 0.0
+    filas["Transito"] = 0.0
+    filas["STK"] = filas.pop("REP").astype(float)
+    filas["_origen"] = "en_camino"
+    filas["_en_repo"] = True
+    return pd.concat([data, filas[[c for c in data.columns if c in filas.columns]]],
+                     ignore_index=True)
 
 
 def build_repo(data: pd.DataFrame,
@@ -512,6 +555,15 @@ def build(loaded: dict[str, pd.DataFrame],
         notes.append("Las columnas REP quedaron precargadas con los pedidos en camino.")
     else:
         rep_long = None
+        # Lo Aprobado y Despachado va al STK de la tienda: asi la tabla no le
+        # vuelve a reponer lo que ya le esta llegando.
+        data = sumar_en_camino(data, en_camino, loaded.get(C.SRC_DETALLADO))
+        if not en_camino.empty:
+            notes.append(
+                f"El STK de cada tienda incluye {en_camino['REP'].sum():,.0f} unidades "
+                f"en camino (pedidos Aprobados o Despachados) en "
+                f"{en_camino['_tienda_key'].nunique()} tiendas. El detalle esta en la "
+                "hoja EN CAMINO.")
         notes.append(
             "Las columnas REP quedaron vacias para que las llenes: REPOSICIÓN suma "
             "lo que escribas y NVO DSP CD descuenta del disponible del CD."
