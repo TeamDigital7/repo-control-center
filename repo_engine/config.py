@@ -198,7 +198,8 @@ REP_MODES = {
     },
     "despachado_no_recibido": {
         "label": "Precargar solo con pedidos ya despachados",
-        "help": "Mas estricto: excluye los pedidos que siguen en estado Aprobado.",
+        "help": ("Mas estricto: solo lo que ya salio del CD y no llego, incluido lo "
+                 "despachado hoy de pedidos que aun figuran como Aprobados."),
     },
     "transito_bodega": {
         "label": "Precargar con el transito de Bodega Gestion",
