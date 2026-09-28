@@ -87,7 +87,21 @@ def render_venta_bigquery():
             st.session_state["reports"][C.SRC_VTA] = validate_source(C.SRC_VTA, vta)
             reset_downstream()
             st.rerun()
+    _feedback_bigquery(C.SRC_VTA)
     return True
+
+
+def _feedback_bigquery(source: str) -> None:
+    """Lo traido de BigQuery se muestra igual que un archivo subido.
+
+    Sin esto, despues del rerun no quedaba nada en pantalla y parecia que el
+    boton no habia hecho nada.
+    """
+    res = st.session_state["loaded"].get(source)
+    if res is None or getattr(res, "_sig", (None,))[0] != "bigquery":
+        return
+    st.markdown(f"**{C.SOURCE_META[source]['label']}** · {res._filename}")
+    _render_slot_feedback(source)
 
 
 def render_pedidos_bigquery():
@@ -127,6 +141,13 @@ def render_pedidos_bigquery():
                 st.code(traceback.format_exc())
             return True
 
+        st.session_state["gb_pedidos"] = gb1 + gb2
+        if not len(cab) or not len(det):
+            # Sin rerun: el aviso de por que vino vacio tiene que quedar a la vista.
+            pagina_pedidos._porque_vacio(conn, m_h, m_d, desde, hasta,
+                                         len(cab), len(det))
+            return True
+
         periodo = f"del {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}"
         for source, frame, nota in (
             (C.SRC_EVOLUCION, bq.a_formato_evolucion(cab),
@@ -134,18 +155,25 @@ def render_pedidos_bigquery():
             (C.SRC_DETALLADO, bq.a_formato_detallado(det),
              f"Detalle de pedidos traido de BigQuery {periodo}."),
         ):
+            notas = [nota]
+            if source == C.SRC_DETALLADO and "LLAVE" in frame and \
+                    frame["LLAVE"].astype("string").str.fullmatch(r"-*-").all():
+                notas.append("El detalle no trae modelo, color ni talla y no se pudo "
+                             "completar con el maestro de productos: la LLAVE queda "
+                             "vacia. Configura `product_master_table` en los secrets.")
             res = LoadResult(source=source, df=frame, rows_raw=len(frame),
-                             notes=[nota])
+                             notes=notas)
             res._sig = ("bigquery", desde, hasta)
             res._filename = f"BigQuery {desde:%d-%m-%Y} a {hasta:%d-%m-%Y}"
             st.session_state["loaded"][source] = res
             st.session_state["reports"][source] = validate_source(source, frame)
-        st.session_state["gb_pedidos"] = gb1 + gb2
         reset_downstream()
         st.rerun()
 
     if st.session_state.get("gb_pedidos"):
         st.caption(f"Ultima consulta: {st.session_state['gb_pedidos']:.2f} GB leidos.")
+    for source in (C.SRC_EVOLUCION, C.SRC_DETALLADO):
+        _feedback_bigquery(source)
     return True
 
 
