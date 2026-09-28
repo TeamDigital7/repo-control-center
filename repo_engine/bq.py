@@ -405,8 +405,12 @@ def _fecha_sql(ref: str, tipo: str | None) -> str:
     t = (tipo or "").upper()
     if t == "DATE":
         return ref
-    if t in ("DATETIME", "TIMESTAMP"):
+    if t == "DATETIME":
         return f"DATE({ref})"
+    if t == "TIMESTAMP":
+        # En UTC, un pedido de las 20:00 de Lima cae al dia siguiente y el de
+        # hoy en la noche quedaba fuera del periodo.
+        return f"DATE({ref}, 'America/Lima')"
     txt = f"TRIM(CAST({ref} AS STRING))"
     formatos = (("%Y-%m-%d", 10), ("%d/%m/%Y", 10), ("%d-%m-%Y", 10),
                 ("%Y/%m/%d", 10), ("%Y%m%d", 8))

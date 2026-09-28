@@ -140,9 +140,48 @@ def estado_canonico(valor):
     txt = txt.strip().upper()
     if txt.startswith("APROB"):
         return "Aprobado"
-    if txt.startswith("DESPACH"):
+    if txt.startswith(("DESPACH", "EXPED", "EN TRANSITO", "TRANSITO", "EN CAMINO",
+                       "ENVIAD")):
         return "Despachado"
     return str(valor).strip()
+
+
+def nro_pedido(serie: pd.Series) -> pd.Series:
+    """Numero de pedido comparable entre Evolucion y Detallado.
+
+    Un export lo trae como `123456` y otro como `123456.0` o `0123456`; sin
+    normalizar, el pedido no cruza y se queda sin estado.
+    """
+    txt = serie.astype("string").str.strip().str.replace(r"^'+", "", regex=True)
+    txt = txt.str.replace(r"\.0+$", "", regex=True)
+    return txt.where(~txt.str.fullmatch(r"\d+", na=False), txt.str.lstrip("0"))
+
+
+def _corrige_invertidas(det: pd.DataFrame, evo: pd.DataFrame, notes: list[str]) -> pd.DataFrame:
+    """El Detallado puede traer Despachadas y Pendientes intercambiadas.
+
+    Es el mismo error de encabezado que tiene el export de Evolucion. Se
+    detecta sumando cada pedido en el Detallado y comparando contra las
+    despachadas de la Evolucion (ya corregida por su Fill Rate): si coinciden
+    mas pedidos con las pendientes que con las despachadas, estan cruzadas.
+    """
+    if "Unid. Despachadas" not in evo.columns:
+        return det
+    ref = (evo.assign(_k=nro_pedido(evo["Nro. Pedido"]))
+           .drop_duplicates("_k").set_index("_k")["Unid. Despachadas"])
+    suma = det.groupby("_k")[["Unid. Despachadas", "Unid. Pendientes"]].sum()
+    suma = suma.join(ref.rename("_ref"), how="inner")
+    suma = suma[(suma["_ref"] > 0)]
+    if suma.empty:
+        return det
+    tal_cual = (suma["Unid. Despachadas"].round() == suma["_ref"].round()).sum()
+    cruzado = (suma["Unid. Pendientes"].round() == suma["_ref"].round()).sum()
+    if cruzado > tal_cual:
+        det[["Unid. Despachadas", "Unid. Pendientes"]] = det[
+            ["Unid. Pendientes", "Unid. Despachadas"]].values
+        notes.append("El Detallado traia 'Unid. Despachadas' y 'Unid. Pendientes' "
+                     "intercambiadas (verificado contra la Evolucion); se corrigio.")
+    return det
 
 
 def build_rep_matrix(detallado: pd.DataFrame,
@@ -174,23 +213,34 @@ def build_rep_matrix(detallado: pd.DataFrame,
         return empty, ["Sin archivo de Detallado de pedidos: REP queda en 0."]
 
     det = detallado.copy()
+    det["_k"] = nro_pedido(det["Numero Pedido"])
     if evolucion is not None and not evolucion.empty:
-        estado = (evolucion.drop_duplicates("Nro. Pedido")
-                  .set_index("Nro. Pedido")["Estado"])
-        det["_estado"] = det["Numero Pedido"].map(estado).map(estado_canonico)
+        det = _corrige_invertidas(det, evolucion, notes)
+        estado = (evolucion.assign(_k=nro_pedido(evolucion["Nro. Pedido"]))
+                  .drop_duplicates("_k").set_index("_k")["Estado"])
+        det["_estado"] = det["_k"].map(estado).map(estado_canonico)
+        cuenta = det.drop_duplicates("_k")["_estado"].fillna("(sin estado)").value_counts()
+        notes.append("Pedidos por estado: " + " · ".join(
+            f"{k} {v:,}" for k, v in cuenta.items()) +
+            ". Solo Aprobado y Despachado suman a la REP.")
     else:
         det["_estado"] = pd.NA
         notes.append("Sin Evolucion: no se pudo filtrar por estado de pedido.")
 
+    # Un pedido despachado HOY suele seguir "Aprobado" hasta que el ERP cambia
+    # el estado: lo que ya salio del CD esta en Unid. Despachadas aunque el
+    # estado no lo diga. Antes solo se contaban sus pendientes y lo despachado
+    # hoy desaparecia de la REP.
     if mode == "despachado_no_recibido":
-        mask = det["_estado"].eq("Despachado")
+        # Todo lo que ya salio del CD y no se recibio, diga el estado lo que diga.
+        mask = det["_estado"].isin(C.ESTADOS_EN_CAMINO) & (det["Unid. Despachadas"] > 0)
         valor = det["Unid. Despachadas"]
     else:  # pendiente_recepcion
         mask = det["_estado"].isin(C.ESTADOS_EN_CAMINO)
-        # Aprobado   -> aun no sale del CD: cuenta lo pendiente de despacho.
+        # Aprobado   -> nada se recibio: lo pendiente en el CD + lo ya despachado.
         # Despachado -> ya salio y no llego: cuenta lo efectivamente despachado.
-        valor = det["Unid. Pendientes"].where(det["_estado"].eq("Aprobado"),
-                                              det["Unid. Despachadas"])
+        valor = (det["Unid. Pendientes"] + det["Unid. Despachadas"]).where(
+            det["_estado"].eq("Aprobado"), det["Unid. Despachadas"])
 
     sub = det.loc[mask & det["_tienda_key"].notna()].copy()
     sub["REP"] = valor.loc[sub.index].astype(float)

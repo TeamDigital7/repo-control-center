@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import traceback
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -107,6 +107,16 @@ def _resumen_estados(cab: pd.DataFrame) -> str | None:
     return "Estados de pedido encontrados · " + " · ".join(partes)
 
 
+DIAS_PEDIDOS = 60
+
+
+def periodo_pedidos(desde: date, hasta: date) -> tuple[date, date]:
+    """Siempre hasta hoy, y al menos los ultimos N dias de pedidos."""
+    hoy = date.today()
+    dias = int(st.session_state.get("bq_dias_pedidos", DIAS_PEDIDOS))
+    return min(desde, hoy - timedelta(days=dias - 1)), max(hasta, hoy)
+
+
 def traer(conn, prep: dict[str, Fuente], desde: date, hasta: date,
           max_gb: float) -> list[tuple[str, str, str]]:
     """Trae lo que este listo. Devuelve los avisos que deben quedar a la vista."""
@@ -140,6 +150,11 @@ def traer(conn, prep: dict[str, Fuente], desde: date, hasta: date,
         except Exception as exc:
             fallo("Venta", exc)
 
+    # Los pedidos no se acotan al periodo de venta: para la REP importa lo que
+    # sigue en camino HOY, aunque se haya pedido semanas antes.
+    desde_p, hasta_p = periodo_pedidos(desde, hasta)
+    desde, hasta = desde_p, hasta_p
+    periodo = f"del {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}"
     h, d = prep["ped_header"], prep["ped_detail"]
     if h.lista and d.lista:
         try:
@@ -200,6 +215,12 @@ def _estado_chips(prep: dict[str, Fuente]) -> None:
 
 def _ajustes(conn, prep: dict[str, Fuente]) -> None:
     """Lo tecnico, fuera del camino: que tabla se usa y que columna es cada campo."""
+    st.session_state["bq_dias_pedidos"] = st.number_input(
+        "Dias de pedidos hacia atras (hasta hoy)", 7, 365,
+        int(st.session_state.get("bq_dias_pedidos", DIAS_PEDIDOS)), step=7,
+        key="bq_dias_ped_in",
+        help="Se traen los pedidos de estos ultimos dias, sea cual sea el periodo de "
+             "venta, para no perder pedidos antiguos que siguen en camino.")
     for f in prep.values():
         st.markdown(f"**{f.etiqueta}** · `{f.tabla or 'sin tabla'}`")
         antes = bq.tabla_configurada(f.tabla) if f.tabla else f.tabla
@@ -261,7 +282,11 @@ def render() -> None:
                       "No reconoci: " + ", ".join(f.faltan) +
                       ". Elige la columna en 'Ajustes de tablas y columnas' (abajo).")
 
-    desde, hasta, max_gb = selector_periodo("todo", "Periodo")
+    desde, hasta, max_gb = selector_periodo("todo", "Periodo de venta")
+    d_p, h_p = periodo_pedidos(desde, hasta)
+    st.caption(f"Pedidos: del **{d_p:%d/%m/%Y}** al **{h_p:%d/%m/%Y}** (hoy incluido), "
+               "para que la REP cuente todo lo que sigue en camino. Se cambia en "
+               "'Ajustes de tablas y columnas'.")
 
     partes = []
     if prep["ventas"].lista:

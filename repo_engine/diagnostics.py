@@ -147,8 +147,10 @@ def collect_issues(repo: pd.DataFrame,
     # 6. Pedidos sin estado ---------------------------------------------------
     det, evo = loaded.get(C.SRC_DETALLADO), loaded.get(C.SRC_EVOLUCION)
     if det is not None and evo is not None:
-        pedidos = set(evo["Nro. Pedido"].dropna())
-        falta = det[~det["Numero Pedido"].isin(pedidos) & det["_tienda_key"].notna()]
+        from .transform import nro_pedido
+        pedidos = set(nro_pedido(evo["Nro. Pedido"]).dropna())
+        falta = det[~nro_pedido(det["Numero Pedido"]).isin(pedidos)
+                    & det["_tienda_key"].notna()]
         if len(falta):
             issues.append(Issue(
                 code="pedido_sin_estado", severity="warn",
