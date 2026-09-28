@@ -63,7 +63,9 @@ def panel_conexion() -> bq.Conexion | None:
                 return None
         st.session_state["bq_cols"] = cols
         mapa = bq.mapear(list(cols["column_name"]))
-        st.session_state["bq_mapa"] = mapa
+    # Siempre se deja en la sesion, tambien cuando vino del mapeo guardado:
+    # si no, el chequeo final leia None y la pagina entera se caia.
+    st.session_state["bq_mapa"] = mapa
 
     problemas = bq.faltantes(mapa)
     if problemas:
@@ -76,7 +78,7 @@ def panel_conexion() -> bq.Conexion | None:
         st.caption(f"{len(mapa)} columnas reconocidas automaticamente.")
         with st.expander("Revisar el mapeo de columnas"):
             _editor_mapeo(conn, tabla, mapa, expandido=False)
-    return conn if not bq.faltantes(st.session_state["bq_mapa"]) else None
+    return conn if not bq.faltantes(st.session_state.get("bq_mapa") or mapa) else None
 
 
 def _editor_mapeo(conn, tabla: str, mapa: dict, expandido: bool = True) -> None:

@@ -471,7 +471,8 @@ def mapear(cols: list[str], alias: dict | None = None) -> dict[str, str]:
     return salida
 
 
-def faltantes(mapa: dict) -> list[str]:
+def faltantes(mapa: dict | None) -> list[str]:
+    mapa = mapa or {}
     problemas = [c for c in OBLIGATORIOS if c not in mapa]
     if not any(c in mapa for c in IDENTIFICA_TIENDA):
         problemas.append("tienda (codigo o nombre)")
@@ -857,7 +858,8 @@ def tabla_ped_detail(cfg: dict | None = None) -> str:
     return _valida_tabla(tabla, "detalle")
 
 
-def faltantes_pedidos(mapa: dict, fuente: str) -> list[str]:
+def faltantes_pedidos(mapa: dict | None, fuente: str) -> list[str]:
+    mapa = mapa or {}
     obligatorios = OBLIG_PED_HEADER if fuente == "ped_header" else OBLIG_PED_DETAIL
     problemas = [c for c in obligatorios if c not in mapa]
     if fuente == "ped_detail" and not any(

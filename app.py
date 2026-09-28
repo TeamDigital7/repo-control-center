@@ -122,7 +122,9 @@ def render_pedidos_bigquery():
             issue_box("warn", "Consulta demasiado grande", str(exc))
             return True
         except Exception as exc:
-            issue_box("error", "Fallo la consulta", f"{type(exc).__name__}: {exc}")
+            issue_box("error", "Fallo la consulta", bq.explica_error(exc))
+            with st.expander("Detalle tecnico"):
+                st.code(traceback.format_exc())
             return True
 
         periodo = f"del {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}"
