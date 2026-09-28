@@ -46,16 +46,16 @@ MAX_GB_POR_DEFECTO = 20.0
 #: Campos que la app necesita y los nombres con los que suelen venir.
 #: El primer alias que exista en la tabla gana.
 ALIAS_VENTAS = {
-    "fecha": ["fecha", "fecha_venta", "fec_venta", "fecha_documento", "fecha_comprobante",
-              "dia", "fecha_dia", "fec_doc"],
-    "tienda_cod": ["cod_tienda", "codigo_tienda", "tienda", "cod_local", "local",
+    "fecha": ["fecmov", "fec_mov", "fecha_movimiento", "fecha", "fecha_venta", "fec_venta",
+              "fecha_documento", "fecha_comprobante", "dia", "fecha_dia", "fec_doc"],
+    "tienda_cod": ["nlocal", "cod_tienda", "codigo_tienda", "tienda", "cod_local", "local",
                    "cod_sucursal", "sucursal_codigo", "id_tienda"],
     "tienda_nombre": ["nombre_tienda", "desc_tienda", "tienda_nombre", "local_nombre",
                       "nombre_local", "sucursal", "desc_local", "nombre_sucursal"],
-    "unidades": ["unidades", "cantidad", "cant", "qty", "unidades_vendidas",
+    "unidades": ["unidades_venta", "unidades", "cantidad", "cant", "qty", "unidades_vendidas",
                  "cantidad_vendida", "und", "cant_venta"],
-    "id_producto": ["id_producto", "idproducto", "sku", "cod_producto", "codigo_producto",
-                    "codint_ma", "producto_id"],
+    "id_producto": ["codpro", "cod_pro", "codint", "id_producto", "idproducto", "sku",
+                    "cod_producto", "codigo_producto", "codint_ma", "producto_id"],
     "cod_modelo": ["cod_modelo", "codigo_modelo", "modelo_cod", "cod_mod", "estilo_cod"],
     "modelo": ["modelo", "desc_modelo", "nombre_modelo", "descripcion_modelo"],
     "cod_color": ["cod_color", "codigo_color", "color_cod"],
@@ -68,10 +68,11 @@ ALIAS_VENTAS = {
     "temporada": ["temporada", "desc_temporada"],
     "temporada_comercial": ["temporada_comercial", "temp_comercial", "coleccion",
                             "temporada_com"],
-    "tipo_prenda": ["tipo_prenda", "tipoprenda", "desc_tipo_prenda", "tipo"],
+    "tipo_prenda": ["tipo_prenda", "tipoprenda", "desc_tipo_prenda"],
     "estilo": ["estilo", "desc_estilo"],
-    "venta": ["venta", "venta_neta", "importe", "monto", "total_venta", "vta"],
-    "barra": ["codigo_barra", "cod_barra", "barra", "ean", "codbarras", "cod_ean"],
+    "venta": ["venta_total_sin_iva", "venta", "venta_neta", "importe", "monto",
+              "total_venta", "vta"],
+    "barra": ["codean", "codigo_barra", "cod_barra", "barra", "ean", "codbarras", "cod_ean"],
 }
 
 #: Campos obligatorios para que la consulta tenga sentido.
@@ -326,6 +327,47 @@ def columnas(conn: Conexion, tabla: str) -> pd.DataFrame:
     return conn.cliente.query(sql, job_config=cfg).to_dataframe()
 
 
+_TIPOS: dict[str, dict[str, str]] = {}
+
+
+def tipos(conn: Conexion, tabla: str) -> dict[str, str]:
+    """Tipo de cada columna segun INFORMATION_SCHEMA, leido una vez por tabla.
+
+    Hace falta para filtrar por fecha sin adivinar: una columna DATE se compara
+    directo (y aprovecha la particion), un STRING o un INT64 como 20260923 hay
+    que convertirlo antes. Si no se puede leer, vacio: la expresion generica
+    funciona igual, solo que sin podar particiones.
+    """
+    if tabla not in _TIPOS:
+        try:
+            cols = columnas(conn, tabla)
+            _TIPOS[tabla] = {str(c): str(t).upper() for c, t in
+                             zip(cols["column_name"], cols["data_type"])}
+        except Exception:
+            return {}
+    return _TIPOS[tabla]
+
+
+def _fecha_sql(ref: str, tipo: str | None) -> str:
+    """Expresion DATE para una columna de fecha de cualquier tipo."""
+    t = (tipo or "").upper()
+    if t == "DATE":
+        return ref
+    if t in ("DATETIME", "TIMESTAMP"):
+        return f"DATE({ref})"
+    txt = f"TRIM(CAST({ref} AS STRING))"
+    formatos = (("%Y-%m-%d", 10), ("%d/%m/%Y", 10), ("%d-%m-%Y", 10),
+                ("%Y/%m/%d", 10), ("%Y%m%d", 8))
+    return "COALESCE(" + ", ".join(
+        f"SAFE.PARSE_DATE('{f}', SUBSTR({txt}, 1, {n}))" for f, n in formatos) + ")"
+
+
+def _num_sql(ref: str, tipo: str | None) -> str:
+    """Una cantidad que puede venir como texto no debe romper el SUM."""
+    return (f"SAFE_CAST({ref} AS FLOAT64)"
+            if (tipo or "").upper() in ("STRING", "") else ref)
+
+
 def perfil_tabla(conn: Conexion, tabla: str, mapa: dict) -> dict:
     """Cuantas filas tiene y entre que fechas, para explicar un resultado vacio.
 
@@ -334,16 +376,19 @@ def perfil_tabla(conn: Conexion, tabla: str, mapa: dict) -> dict:
     fecha mapeada no es la correcta. Esto las separa en una sola consulta.
     """
     if "fecha" not in mapa:
-        sql = f"SELECT COUNT(*) AS filas, NULL AS desde, NULL AS hasta FROM `{tabla}`"
+        sql = (f"SELECT COUNT(*) AS filas, NULL AS desde, NULL AS hasta, "
+               f"0 AS con_fecha FROM `{tabla}`")
     else:
         col = mapa["fecha"]
-        sql = (f"SELECT COUNT(*) AS filas, MIN(DATE(`{col}`)) AS desde, "
-               f"MAX(DATE(`{col}`)) AS hasta FROM `{tabla}`")
+        f = _fecha_sql(f"`{col}`", tipos(conn, tabla).get(col))
+        sql = (f"SELECT COUNT(*) AS filas, MIN({f}) AS desde, MAX({f}) AS hasta, "
+               f"COUNT({f}) AS con_fecha FROM `{tabla}`")
     df = conn.cliente.query(sql).to_dataframe()
     if not len(df):
         return {}
     fila = df.iloc[0]
     return {"filas": int(fila["filas"]),
+            "con_fecha": int(fila.get("con_fecha") or 0),
             "desde": fila.get("desde"), "hasta": fila.get("hasta"),
             "columna_fecha": mapa.get("fecha")}
 
@@ -471,7 +516,8 @@ def mapear(cols: list[str], alias: dict | None = None) -> dict[str, str]:
     return salida
 
 
-def faltantes(mapa: dict) -> list[str]:
+def faltantes(mapa: dict | None) -> list[str]:
+    mapa = mapa or {}
     problemas = [c for c in OBLIGATORIOS if c not in mapa]
     if not any(c in mapa for c in IDENTIFICA_TIENDA):
         problemas.append("tienda (codigo o nombre)")
@@ -533,9 +579,24 @@ def _param(nombre: str, tipo: str, valor):
 # consultas de negocio
 # ---------------------------------------------------------------------------
 
-def _select(mapa: dict, campos: list[str]) -> list[str]:
-    """Columnas del SELECT, con alias al nombre logico."""
-    return [f"`{mapa[c]}` AS {c}" for c in campos if c in mapa]
+def _select(mapa: dict, campos: list[str], tipos_: dict | None = None,
+            pref: str = "") -> list[str]:
+    """Columnas del SELECT, con alias al nombre logico.
+
+    Un EAN guardado como FLOAT64 saldria como 7801234567890.0: se pasa a texto
+    entero para que cruce con el codigo de barras de los archivos.
+    """
+    tipos_ = tipos_ or {}
+    out = []
+    for c in campos:
+        if c not in mapa:
+            continue
+        ref = f"{pref}`{mapa[c]}`"
+        if c == "barra" and tipos_.get(mapa[c], "") in ("FLOAT64", "FLOAT", "NUMERIC",
+                                                          "BIGNUMERIC"):
+            ref = f"CAST(SAFE_CAST({ref} AS INT64) AS STRING)"
+        out.append(f"{ref} AS {c}")
+    return out
 
 
 #: Sin `HAVING`: si la columna de origen se llama igual que el alias de salida
@@ -543,44 +604,53 @@ def _select(mapa: dict, campos: list[str]) -> list[str]:
 #: con "Aggregations of aggregations are not allowed". Las filas que suman cero
 #: se descartan despues, en pandas, que es equivalente y no puede romperse.
 
-def sql_ventas_agregadas(mapa: dict, tabla: str) -> str:
+def sql_ventas_agregadas(mapa: dict, tabla: str, tipos_: dict | None = None) -> str:
     """Venta del periodo agregada por producto y tienda: alimenta la Tabla de Repo."""
     dims = [c for c in ("tienda_cod", "tienda_nombre", "clase", "marca", "genero",
                         "linea", "temporada", "estilo", "tipo_prenda",
                         "temporada_comercial", "cod_modelo", "modelo", "cod_color",
                         "color", "talla", "id_producto", "barra") if c in mapa]
-    select = ",\n               ".join(_select(mapa, dims))
+    tipos_ = tipos_ or {}
+    select = ",\n               ".join(_select(mapa, dims, tipos_))
     group = ", ".join(str(i + 1) for i in range(len(dims)))
-    venta = (f",\n               SUM(`{mapa['venta']}`) AS venta"
-             if "venta" in mapa else "")
+    und = _num_sql(f"`{mapa['unidades']}`", tipos_.get(mapa["unidades"]))
+    venta = ""
+    if "venta" in mapa:
+        v = _num_sql(f"`{mapa['venta']}`", tipos_.get(mapa["venta"]))
+        venta = f",\n               SUM({v}) AS venta"
     return f"""
         SELECT {select},
-               SUM(`{mapa['unidades']}`) AS unidades{venta}
+               SUM({und}) AS unidades{venta}
         FROM `{tabla}`
-        WHERE DATE(`{mapa['fecha']}`) BETWEEN @desde AND @hasta
+        WHERE {_fecha_where(mapa, tipos_=tipos_)}
         GROUP BY {group}
     """
 
 
-def sql_ventas_diarias(mapa: dict, tabla: str) -> str:
+def sql_ventas_diarias(mapa: dict, tabla: str, tipos_: dict | None = None) -> str:
     """Venta diaria por tienda y producto: alimenta el Analisis de Efectividad."""
+    tipos_ = tipos_ or {}
     dims = [c for c in ("tienda_cod", "tienda_nombre", "id_producto", "cod_modelo",
                         "modelo", "cod_color", "color", "talla") if c in mapa]
-    select = ",\n               ".join(_select(mapa, dims))
+    select = ",\n               ".join(_select(mapa, dims, tipos_))
     group = ", ".join(str(i + 2) for i in range(len(dims)))
+    fecha = _fecha_sql(f"`{mapa['fecha']}`", tipos_.get(mapa["fecha"]))
+    und = _num_sql(f"`{mapa['unidades']}`", tipos_.get(mapa["unidades"]))
     return f"""
-        SELECT DATE(`{mapa['fecha']}`) AS fecha,
+        SELECT {fecha} AS fecha,
                {select},
-               SUM(`{mapa['unidades']}`) AS unidades
+               SUM({und}) AS unidades
         FROM `{tabla}`
-        WHERE DATE(`{mapa['fecha']}`) BETWEEN @desde AND @hasta
+        WHERE {_fecha_where(mapa, tipos_=tipos_)}
         GROUP BY 1, {group}
     """
 
 
 def ventas(conn: Conexion, mapa: dict, tabla: str, desde: date, hasta: date,
            diaria: bool = False, max_gb: float = MAX_GB_POR_DEFECTO):
-    sql = sql_ventas_diarias(mapa, tabla) if diaria else sql_ventas_agregadas(mapa, tabla)
+    t = tipos(conn, tabla)
+    sql = (sql_ventas_diarias(mapa, tabla, t) if diaria
+           else sql_ventas_agregadas(mapa, tabla, t))
     params = [_param("desde", "DATE", desde), _param("hasta", "DATE", hasta)]
     df, gb = ejecutar(conn, sql, params, max_gb)
     if "unidades" in df.columns:          # el filtro que antes hacia el HAVING
@@ -742,9 +812,9 @@ TABLA_PED_DETAIL = ""
 ALIAS_PED_HEADER = {
     "nro_pedido": ["nroped", "nro_pedido", "nro_ped", "num_pedido", "numero_pedido", "cod_pedido",
                    "id_pedido", "numped", "nro_orden", "orden", "pedido"],
-    "fecha": ["fecdoc", "fecped", "fec_pedido", "fecha_pedido", "fec_emision", "fecha_emision",
-              "fec_doc", "fecha_documento", "fecha_aprobacion", "fecha_registro",
-              "fecha"],
+    "fecha": ["fecped", "fec_pedido", "fecha_pedido", "fecreg", "fecha_registro", "fecdoc",
+              "fec_emision", "fecha_emision", "fec_doc", "fecha_documento",
+              "fecha_aprobacion", "fecha"],
     "estado": ["estado", "desest", "des_estado", "desc_estado", "nom_estado", "estado_pedido",
                "estado_desc", "estado", "situacion", "status"],
     "tipo_pedido": ["clasificacion", "tipped", "tip_pedido", "tipo_pedido", "des_tipo_pedido", "desc_tipo_pedido",
@@ -776,8 +846,8 @@ ALIAS_PED_HEADER = {
 ALIAS_PED_DETAIL = {
     "nro_pedido": ["nro_pedido", "nro_ped", "num_pedido", "numero_pedido", "cod_pedido",
                    "id_pedido", "numped", "nro_orden", "orden", "pedido"],
-    "fecha": ["fecdoc", "fecped", "fec_pedido", "fecha_pedido", "fec_emision", "fecha_emision",
-              "fec_doc", "fecha"],
+    "fecha": ["fecped", "fec_pedido", "fecha_pedido", "fecdoc", "fec_emision",
+              "fecha_emision", "fec_doc", "fecha"],
     "tienda_cod": ["cod_local", "cod_tienda", "codigo_tienda", "cod_loc",
                    "tienda_cod", "cod_destino", "id_local"],
     "tienda_nombre": ["nombre_tienda", "tienda_nombre", "tienda", "nombre_loc",
@@ -857,7 +927,8 @@ def tabla_ped_detail(cfg: dict | None = None) -> str:
     return _valida_tabla(tabla, "detalle")
 
 
-def faltantes_pedidos(mapa: dict, fuente: str) -> list[str]:
+def faltantes_pedidos(mapa: dict | None, fuente: str) -> list[str]:
+    mapa = mapa or {}
     obligatorios = OBLIG_PED_HEADER if fuente == "ped_header" else OBLIG_PED_DETAIL
     problemas = [c for c in obligatorios if c not in mapa]
     if fuente == "ped_detail" and not any(
@@ -868,44 +939,75 @@ def faltantes_pedidos(mapa: dict, fuente: str) -> list[str]:
     return problemas
 
 
-def _fecha_where(mapa: dict, alias_tabla: str = "") -> str:
+def _fecha_where(mapa: dict, alias_tabla: str = "", tipos_: dict | None = None) -> str:
     """Filtro de periodo. Siempre parametrizado, nunca interpolado."""
     pref = f"{alias_tabla}." if alias_tabla else ""
-    return f"DATE({pref}`{mapa['fecha']}`) BETWEEN @desde AND @hasta"
+    col = mapa["fecha"]
+    expr = _fecha_sql(f"{pref}`{col}`", (tipos_ or {}).get(col))
+    return f"{expr} BETWEEN @desde AND @hasta"
 
 
-def sql_ped_header(mapa: dict, tabla: str) -> str:
+def sql_ped_header(mapa: dict, tabla: str, tipos_: dict | None = None) -> str:
     campos = [c for c in ALIAS_PED_HEADER if c in mapa]
-    select = ",\n               ".join(_select(mapa, campos))
+    select = ",\n               ".join(_select(mapa, campos, tipos_))
     return f"""
         SELECT {select}
         FROM `{tabla}`
-        WHERE {_fecha_where(mapa)}
+        WHERE {_fecha_where(mapa, tipos_=tipos_)}
     """
 
 
+#: Lo que el detalle necesita del maestro cuando solo trae el ID de producto.
+CAMPOS_LLAVE = ("cod_modelo", "cod_color", "talla")
+
+
 def sql_ped_detail(mapa_d: dict, tabla_d: str,
-                   mapa_h: dict | None = None, tabla_h: str | None = None) -> str:
+                   mapa_h: dict | None = None, tabla_h: str | None = None,
+                   tipos_d: dict | None = None, tipos_h: dict | None = None,
+                   arti: tuple[str, dict] | None = None) -> str:
     """Detalle del periodo.
 
     Si el detalle trae su propia fecha se filtra directo. Si no, se acota con
     los pedidos de la cabecera que caen en el rango: sin ese `IN` habria que
     leer la tabla entera.
+
+    Si el detalle solo trae el ID de producto (`codint_pd`), sin modelo, color
+    ni talla, la LLAVE saldria vacia y ningun pedido cruzaria con la venta. En
+    ese caso se completa con el maestro de productos (`arti`) en la misma
+    consulta.
     """
     campos = [c for c in ALIAS_PED_DETAIL if c in mapa_d]
-    select = ",\n               ".join(_select(mapa_d, campos))
+    unir = (arti is not None and "id_producto" in mapa_d
+            and any(c not in mapa_d for c in CAMPOS_LLAVE))
+    pref = "d." if unir else ""
+    select = _select(mapa_d, campos, tipos_d, pref)
+    join = ""
+    if unir:
+        tabla_a, mapa_a = arti
+        traer = [c for c in CAMPOS_LLAVE if c in mapa_a and c not in mapa_d]
+        select += [f"a.{c} AS {c}" for c in traer]
+        cols_a = ",\n                   ".join(
+            f"ANY_VALUE(CAST(`{mapa_a[c]}` AS STRING)) AS {c}" for c in traer)
+        join = f"""
+        LEFT JOIN (
+            SELECT CAST(`{mapa_a['id_producto']}` AS STRING) AS _id,
+                   {cols_a}
+            FROM `{tabla_a}`
+            GROUP BY 1
+        ) a ON CAST(d.`{mapa_d['id_producto']}` AS STRING) = a._id"""
     if "fecha" in mapa_d:
-        where = _fecha_where(mapa_d)
+        where = _fecha_where(mapa_d, "d" if unir else "", tipos_d)
     elif mapa_h and tabla_h and "fecha" in mapa_h:
-        where = (f"`{mapa_d['nro_pedido']}` IN (SELECT `{mapa_h['nro_pedido']}` "
-                 f"FROM `{tabla_h}` WHERE {_fecha_where(mapa_h)})")
+        where = (f"{pref}`{mapa_d['nro_pedido']}` IN (SELECT `{mapa_h['nro_pedido']}` "
+                 f"FROM `{tabla_h}` WHERE {_fecha_where(mapa_h, tipos_=tipos_h)})")
     else:
         raise RuntimeError(
             "Ni el detalle ni la cabecera tienen columna de fecha mapeada: no hay "
             "como acotar el periodo y la consulta leeria la tabla completa.")
+    select_txt = ",\n               ".join(select)
     return f"""
-        SELECT {select}
-        FROM `{tabla_d}`
+        SELECT {select_txt}
+        FROM `{tabla_d}`{" d" if unir else ""}{join}
         WHERE {where}
     """
 
@@ -913,15 +1015,36 @@ def sql_ped_detail(mapa_d: dict, tabla_d: str,
 def ped_header(conn: Conexion, mapa: dict, tabla: str, desde: date, hasta: date,
                max_gb: float = MAX_GB_POR_DEFECTO):
     params = [_param("desde", "DATE", desde), _param("hasta", "DATE", hasta)]
-    df, gb = ejecutar(conn, sql_ped_header(mapa, tabla), params, max_gb)
+    df, gb = ejecutar(conn, sql_ped_header(mapa, tabla, tipos(conn, tabla)),
+                      params, max_gb)
     return df.reset_index(drop=True), gb
+
+
+def _arti_para_llave(conn: Conexion) -> tuple[str, dict] | None:
+    """(tabla, mapa) del maestro si esta configurado y trae modelo, color y talla."""
+    try:
+        tabla = tabla_arti()
+    except RuntimeError:
+        return None
+    t = tipos(conn, tabla)
+    if not t:
+        return None
+    mapa = mapear(list(t), ALIAS_ARTI)
+    if "id_producto" not in mapa or not all(c in mapa for c in CAMPOS_LLAVE):
+        return None
+    return tabla, mapa
 
 
 def ped_detail(conn: Conexion, mapa_d: dict, tabla_d: str, desde: date, hasta: date,
                mapa_h: dict | None = None, tabla_h: str | None = None,
                max_gb: float = MAX_GB_POR_DEFECTO):
     params = [_param("desde", "DATE", desde), _param("hasta", "DATE", hasta)]
-    sql = sql_ped_detail(mapa_d, tabla_d, mapa_h, tabla_h)
+    arti_ = None
+    if "id_producto" in mapa_d and any(c not in mapa_d for c in CAMPOS_LLAVE):
+        arti_ = _arti_para_llave(conn)
+    sql = sql_ped_detail(mapa_d, tabla_d, mapa_h, tabla_h,
+                         tipos(conn, tabla_d),
+                         tipos(conn, tabla_h) if tabla_h else None, arti_)
     df, gb = ejecutar(conn, sql, params, max_gb)
     return df.reset_index(drop=True), gb
 

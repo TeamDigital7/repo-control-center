@@ -41,7 +41,7 @@ def _estado() -> None:
 def _mapa(conn, tabla: str, fuente: str) -> dict | None:
     """Mapeo guardado, o descubierto por alias contra INFORMATION_SCHEMA."""
     guardado = bq.cargar_mapeo().get(tabla)
-    if guardado:
+    if guardado and not bq.faltantes_pedidos(guardado, fuente):
         return guardado
     try:
         cols = bq.columnas(conn, tabla)
@@ -53,7 +53,9 @@ def _mapa(conn, tabla: str, fuente: str) -> dict | None:
         _no_existe(conn, tabla)
         return None
     st.session_state[f"cols_{fuente}"] = cols
-    return bq.mapear(list(cols["column_name"]), bq.ALIAS_POR_FUENTE[fuente])
+    detectado = bq.mapear(list(cols["column_name"]), bq.ALIAS_POR_FUENTE[fuente])
+    # Lo guardado manda; la deteccion solo completa lo que le faltaba.
+    return {**detectado, **(guardado or {})}
 
 
 def _no_existe(conn, tabla: str) -> None:
@@ -214,39 +216,17 @@ def _traer(conn, m_h, m_d, desde, hasta, max_gb):
 
 
 def _porque_vacio(conn, m_h, m_d, desde, hasta, n_cab: int, n_det: int) -> None:
-    """Separa las tres causas de un resultado vacio en vez de dejarlas juntas."""
+    """Separa las causas de un resultado vacio en vez de dejarlas juntas."""
+    from .pagina_datos import explicar_vacio
     cfg = bq.config()
-    for etiqueta, mapa, tabla, filas in (
-            ("cabecera", m_h, bq.tabla_ped_header(cfg), n_cab),
-            ("detalle", m_d, bq.tabla_ped_detail(cfg), n_det)):
-        if filas:
-            continue
-        try:
-            perfil = bq.perfil_tabla(conn, tabla, mapa)
-        except Exception as exc:
-            issue_box("warn", f"La {etiqueta} vino vacia",
-                      f"No pude revisar por que: {bq.explica_error(exc)}")
-            continue
-        if not perfil or not perfil.get("filas"):
-            issue_box("error", f"La tabla de {etiqueta} esta vacia",
-                      f"`{tabla}` no tiene ninguna fila. Revisa que sea la tabla "
-                      "correcta: puede que los datos esten en otra.")
-            continue
-        d, h = perfil.get("desde"), perfil.get("hasta")
-        col = perfil.get("columna_fecha")
-        if d is None or h is None:
-            issue_box("warn", f"La {etiqueta} no trajo filas en el periodo",
-                      f"La tabla tiene {perfil['filas']:,} filas pero la columna de "
-                      f"fecha (`{col}`) esta vacia o no se pudo leer como fecha. "
-                      "Revisa en el mapeo que sea la columna correcta."
-                      .replace(",", " "))
-            continue
-        issue_box("warn", f"La {etiqueta} no tiene datos en ese periodo",
-                  f"`{tabla}` tiene {perfil['filas']:,} filas, con fechas entre "
-                  f"**{d}** y **{h}** segun la columna `{col}`. Tu periodo va del "
-                  f"{desde:%d/%m/%Y} al {hasta:%d/%m/%Y}: ajusta el rango, o "
-                  "revisa en el mapeo si esa es la columna de fecha que "
-                  "corresponde.".replace(",", " "))
+    if not n_cab:
+        explicar_vacio(conn, bq.tabla_ped_header(cfg), m_h, desde, hasta, "cabecera")
+    elif not n_det:
+        issue_box("warn", "El detalle vino vacio",
+                  f"La cabecera trajo {n_cab:,} pedidos en el periodo pero el "
+                  "detalle ninguna linea: el numero de pedido no cruza entre las "
+                  "dos tablas. Revisa en el mapeo que `nro_pedido` sea la misma "
+                  "columna en ambas.".replace(",", " "))
 
 
 # ---------------------------------------------------------------------------
