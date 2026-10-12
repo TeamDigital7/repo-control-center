@@ -164,8 +164,26 @@ def _formats(wb) -> dict:
 # hoja REPO
 # ---------------------------------------------------------------------------
 
+def _formula_simple(formula: str, expand_future_functions: bool = False) -> str:
+    """Lo mismo que hace xlsxwriter, sin su revision de funciones nuevas.
+
+    xlsxwriter pasa cada formula por ~30 expresiones regulares buscando
+    funciones de Excel 365 (FILTER, XLOOKUP...). Las de esta hoja son solo
+    BUSCARV, SI.ERROR, SUBTOTALES y sumas, y con ~300 000 formulas esa revision
+    era casi la mitad del tiempo de generar el libro.
+    """
+    if formula.startswith("{"):
+        formula = formula[1:]
+    if formula.startswith("="):
+        formula = formula[1:]
+    if formula.endswith("}"):
+        formula = formula[:-1]
+    return formula
+
+
 def _write_repo(wb, f, repo: pd.DataFrame, catalogs: Catalogs, alerta_negativo: bool) -> None:
     ws = wb.add_worksheet(C.SHEET_NAME)
+    ws._prepare_formula = _formula_simple
     n_fixed = len(C.FIXED_COLUMNS)
     n_rows = len(repo)
     first, last = C.ROW_FIRST_DATA, C.ROW_FIRST_DATA + n_rows - 1

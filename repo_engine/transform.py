@@ -126,24 +126,35 @@ def build_data(vta: pd.DataFrame, bodega: pd.DataFrame, catalogs: Catalogs | Non
 # 2. columna REP (pedidos en camino)
 # ---------------------------------------------------------------------------
 
-def estado_canonico(valor):
-    """`APROBADO`, `aprobado` o `Aprobada` cuentan como Aprobado; igual Despachado.
+#: Estados del sistema de pedidos (los mismos codigos que usa Forus IQ):
+#: 0 Creado, 1 Aprobado, 2 en Picking, 3 Documentado, 4 Recepcionado,
+#: 6 en Transporte, 7 Prerecepcionado. Para la REP, 1-2 aun estan en el CD
+#: ("Aprobado") y 3-6-7 ya salieron ("Despachado").
+CODIGO_A_ESTADO = {0: "Creado", 1: "Aprobado", 2: "Aprobado", 3: "Despachado",
+                   4: "Recepcionado", 6: "Despachado", 7: "Despachado"}
+#: Si vienen como texto (el orden importa: PRERECEPCIONADO contiene RECEPCIONADO).
+NOMBRE_A_CODIGO = (("PRERECEP", 7), ("RECEPCION", 4), ("TRANSPORTE", 6), ("DOCUMENT", 3),
+                   ("DESPACH", 3), ("EXPED", 3), ("TRANSITO", 6), ("EN CAMINO", 6),
+                   ("ENVIAD", 3), ("PICKING", 2), ("APROB", 1), ("CREAD", 0))
 
-    El Excel trae `Aprobado`/`Despachado`, pero la tabla del ERP puede traerlo
-    en mayusculas o con otra terminacion; comparado tal cual, ningun pedido
-    coincidia y la REP quedaba en cero.
+
+def estado_canonico(valor):
+    """`1`, `6. en Transporte`, `APROBADO` o `Despachado` -> Aprobado / Despachado / ...
+
+    El Excel trae `Aprobado`/`Despachado`, pero las tablas del sistema traen el
+    codigo numerico; comparado tal cual, ningun pedido coincidia y la REP
+    quedaba en cero.
     """
     if pd.isna(valor):
         return pd.NA
+    import re
     import unicodedata
     txt = unicodedata.normalize("NFKD", str(valor)).encode("ascii", "ignore").decode()
     txt = txt.strip().upper()
-    if txt.startswith("APROB"):
-        return "Aprobado"
-    if txt.startswith(("DESPACH", "EXPED", "EN TRANSITO", "TRANSITO", "EN CAMINO",
-                       "ENVIAD")):
-        return "Despachado"
-    return str(valor).strip()
+    m = re.match(r"^(\d+)", txt)
+    codigo = int(m.group(1)) if m else next(
+        (c for patron, c in NOMBRE_A_CODIGO if patron in txt), None)
+    return CODIGO_A_ESTADO.get(codigo, str(valor).strip())
 
 
 def nro_pedido(serie: pd.Series) -> pd.Series:
