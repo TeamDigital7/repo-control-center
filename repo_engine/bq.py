@@ -897,6 +897,8 @@ ALIAS_PED_HEADER = {
                          "total_despachado"],
     "unid_pendientes": ["canpen", "canpend", "cant_pendiente", "cant_pend", "unid_pendientes",
                         "cantidad_pendiente", "und_pendientes", "qty_pendiente", "saldo"],
+    # Con fecha de recepcion la tienda ya lo recibio: esta en su stock.
+    "fecha_recepcion": ["fecrec", "fecha_recepcion", "fec_recepcion", "fecha_recibido"],
 }
 
 ALIAS_PED_DETAIL = {
@@ -926,6 +928,10 @@ ALIAS_PED_DETAIL = {
                          "cantidad_atendida"],
     "unid_pendientes": ["canpen", "canpend", "cant_pendiente", "cant_pend", "unid_pendientes",
                         "cantidad_pendiente", "und_pendientes", "qty_pendiente", "saldo"],
+    # Estado de la linea (estado_pd): una linea recepcionada ya esta en la tienda.
+    "estado_linea": ["estado_linea", "estado_detalle", "estado"],
+    # Separa lineas legitimas de copias repetidas en la tabla de staging.
+    "id_linea": ["iddeta", "id_detalle", "id_linea", "linea", "item"],
 }
 
 #: Lo minimo para que el cruce y la columna REP funcionen.
@@ -1076,12 +1082,33 @@ def ped_header(conn: Conexion, mapa: dict, tabla: str, desde: date, hasta: date,
     return df.reset_index(drop=True), gb
 
 
-def _arti_para_llave(conn: Conexion) -> tuple[str, dict] | None:
-    """(tabla, mapa) del maestro si esta configurado y trae modelo, color y talla."""
+def _buscar_arti(conn: Conexion, referencia: str) -> str | None:
+    """El maestro ARTI del mismo proyecto (`..._central_arti`), si no esta en los secrets."""
+    try:
+        encontradas = buscar_tablas(conn, referencia, "arti")
+    except Exception:
+        return None
+    if encontradas is None or not len(encontradas):
+        return None
+    proyecto = referencia.split(".")[0]
+    candidatas = [(str(e), str(t)) for e, t in
+                  zip(encontradas["table_schema"], encontradas["table_name"])
+                  if str(t).lower().endswith("_arti")]
+    if not candidatas:
+        return None
+    candidatas.sort(key=lambda x: ("central" not in x[1].lower(), len(x[1])))
+    esquema, nombre = candidatas[0]
+    return f"{proyecto}.{esquema}.{nombre}"
+
+
+def _arti_para_llave(conn: Conexion, referencia: str | None = None) -> tuple[str, dict] | None:
+    """(tabla, mapa) del maestro si trae modelo, color y talla."""
     try:
         tabla = tabla_arti()
     except RuntimeError:
-        return None
+        tabla = _buscar_arti(conn, referencia) if referencia else None
+        if tabla is None:
+            return None
     t = tipos(conn, tabla)
     if not t:
         return None
@@ -1089,6 +1116,141 @@ def _arti_para_llave(conn: Conexion) -> tuple[str, dict] | None:
     if "id_producto" not in mapa or not all(c in mapa for c in CAMPOS_LLAVE):
         return None
     return tabla, mapa
+
+
+# ---------------------------------------------------------------------------
+# transito: pedidos abiertos hacia las tiendas (misma regla que Forus IQ)
+# ---------------------------------------------------------------------------
+#
+# En las tablas del sistema el estado viene como codigo: 0 Creado, 1 Aprobado,
+# 2 en Picking, 3 Documentado, 4 Recepcionado, 6 en Transporte,
+# 7 Prerecepcionado. Clasificacion: 1 Reposicion, 2 Llenado de canal,
+# 3 Traspaso tiendas, 4 Devolucion CD.
+
+#: Abiertos en cualquier fecha: siguen reservados para la tienda.
+ESTADOS_TRANSITO = (1, 2, 3)
+#: En transporte / prerecepcionado: solo si el pedido es reciente; uno mas
+#: antiguo ya llego y quedo sin cerrar.
+ESTADOS_TRANSITO_RECIENTES = (6, 7)
+DIAS_TRANSITO_RECIENTES = 15
+CLASIFICACIONES_TRANSITO = (1, 2, 3)
+
+#: Si vienen como texto sin numero (el orden importa: PRERECEPCIONADO contiene
+#: RECEPCIONADO).
+NOMBRES_ESTADO = (("PRERECEP", 7), ("RECEPCION", 4), ("TRANSPORTE", 6), ("DOCUMENT", 3),
+                  ("DESPACH", 3), ("PICKING", 2), ("APROBAD", 1), ("CREAD", 0))
+NOMBRES_CLASIFICACION = (("REPOSIC", 1), ("LLENADO", 2), ("TRASPASO", 3), ("DEVOLUC", 4))
+
+
+def _codigo_sql(ref: str, nombres) -> str:
+    """`1`, `1.-Reposicion` o `Aprobado` -> codigo entero (NULL si no se reconoce)."""
+    t = f"UPPER(TRIM(CAST({ref} AS STRING)))"
+    casos = " ".join(f"WHEN STRPOS({t}, '{n}') > 0 THEN {c}" for n, c in nombres)
+    return (f"(CASE WHEN REGEXP_CONTAINS({t}, r'^[0-9]') "
+            f"THEN SAFE_CAST(REGEXP_EXTRACT({t}, r'^([0-9]+)') AS INT64) {casos} END)")
+
+
+def _sin_repetidas(tabla: str, mapa: dict, campos) -> str:
+    """Solo las columnas usadas y sin filas repetidas exactas: si staging guarda
+    la misma linea varias veces, cuenta una sola."""
+    cols = ", ".join(f"`{mapa[c]}`" for c in campos if c in mapa)
+    return f"(SELECT DISTINCT {cols} FROM `{tabla}`)"
+
+
+def sql_transito(mapa_h: dict, tabla_h: str, mapa_d: dict, tabla_d: str,
+                 tipos_h: dict | None = None,
+                 arti: tuple[str, dict] | None = None) -> str:
+    """Lineas de los pedidos que siguen en camino a las tiendas, de todo el historial.
+
+    Es la regla de Forus IQ: estados 1-2-3 siempre, 6-7 si el pedido tiene
+    hasta 15 dias, nunca lo ya recepcionado (fecha de recepcion o linea en
+    estado 4), y solo Reposicion, Llenado de canal y Traspaso entre tiendas.
+    Las despachadas que vienen en 0 (aprobado, picking) se toman como pedidas.
+    """
+    tipos_h = tipos_h or {}
+
+    def h(c):
+        return f"h.`{mapa_h[c]}`"
+
+    def d(c):
+        return f"d.`{mapa_d[c]}`"
+
+    estado = _codigo_sql(h("estado"), NOMBRES_ESTADO)
+    num = "SAFE_CAST({} AS FLOAT64)"
+    ped = f"COALESCE({num.format(d('unid_pedidas'))}, 0)"
+    desp = (f"COALESCE(NULLIF({num.format(d('unid_despachadas'))}, 0), {ped})"
+            if "unid_despachadas" in mapa_d else ped)
+
+    cond = [f"({estado} IN ({', '.join(map(str, ESTADOS_TRANSITO))})"]
+    if "fecha" in mapa_h:
+        fecha = _fecha_sql(h("fecha"), tipos_h.get(mapa_h["fecha"]))
+        cond.append(f" OR ({estado} IN ({', '.join(map(str, ESTADOS_TRANSITO_RECIENTES))}) "
+                    f"AND {fecha} >= DATE_SUB(@hoy, INTERVAL {DIAS_TRANSITO_RECIENTES} DAY)))")
+    else:
+        cond.append(")")
+    where = ["".join(cond)]
+    if "fecha_recepcion" in mapa_h:
+        where.append(f"{h('fecha_recepcion')} IS NULL")
+    if "estado_linea" in mapa_d:
+        where.append(f"IFNULL({_codigo_sql(d('estado_linea'), NOMBRES_ESTADO)}, -1) != 4")
+    if "tipo_pedido" in mapa_h:
+        clasif = _codigo_sql(h("tipo_pedido"), NOMBRES_CLASIFICACION)
+        where.append(f"IFNULL({clasif}, 1) IN "
+                     f"({', '.join(map(str, CLASIFICACIONES_TRANSITO))})")
+
+    tienda = "tienda_cod" if "tienda_cod" in mapa_h else None
+    sel = [
+        f"TRIM(CAST({h('nro_pedido')} AS STRING)) AS nro_pedido",
+        f"CAST({h('estado')} AS STRING) AS estado",
+        (f"CAST({h('tipo_pedido')} AS STRING)" if "tipo_pedido" in mapa_h
+         else "CAST(NULL AS STRING)") + " AS tipo_pedido",
+        (f"TRIM(CAST({h(tienda)} AS STRING))" if tienda
+         else f"TRIM(CAST({d('tienda_cod')} AS STRING))") + " AS tienda_cod",
+        f"TRIM(CAST({d('id_producto')} AS STRING)) AS id_producto",
+    ]
+    join_a = ""
+    if arti is not None:
+        tabla_a, mapa_a = arti
+        sel += [f"a.{c} AS {c}" for c in CAMPOS_LLAVE]
+        cols_a = ", ".join(f"ANY_VALUE(TRIM(CAST(`{mapa_a[c]}` AS STRING))) AS {c}"
+                           for c in CAMPOS_LLAVE)
+        # Mismo SKU canonico de los dos lados: sin `.0` ni ceros a la izquierda.
+        canon = ("REGEXP_REPLACE(REGEXP_REPLACE(TRIM(CAST({} AS STRING)), "
+                 "r'[.]0+$', ''), r'^0+([0-9])', r'\\1')")
+        join_a = (f"\nLEFT JOIN (SELECT {canon.format('`' + mapa_a['id_producto'] + '`')} "
+                  f"AS _id, {cols_a} FROM `{tabla_a}` GROUP BY 1) AS a "
+                  f"ON {canon.format(d('id_producto'))} = a._id")
+    else:
+        sel += [f"{d(c)} AS {c}" if c in mapa_d else f"CAST(NULL AS STRING) AS {c}"
+                for c in CAMPOS_LLAVE]
+    grupos = ", ".join(str(i + 1) for i in range(len(sel)))
+    sel += [f"SUM({ped}) AS unid_pedidas", f"SUM({desp}) AS unid_despachadas"]
+
+    campos_h = ("nro_pedido", "estado", "tipo_pedido", "tienda_cod", "fecha",
+                "fecha_recepcion")
+    campos_d = ("nro_pedido", "id_linea", "id_producto", "estado_linea", "tienda_cod",
+                "unid_pedidas", "unid_despachadas", *CAMPOS_LLAVE)
+    return (
+        f"SELECT {', '.join(sel)}\n"
+        f"FROM {_sin_repetidas(tabla_h, mapa_h, campos_h)} AS h\n"
+        f"JOIN {_sin_repetidas(tabla_d, mapa_d, campos_d)} AS d\n"
+        f"  ON TRIM(CAST({h('nro_pedido')} AS STRING)) = "
+        f"TRIM(CAST({d('nro_pedido')} AS STRING)){join_a}\n"
+        f"WHERE {' AND '.join(where)}\n"
+        f"GROUP BY {grupos}"
+    )
+
+
+def transito(conn: Conexion, mapa_h: dict, tabla_h: str, mapa_d: dict, tabla_d: str,
+             max_gb: float = MAX_GB_POR_DEFECTO):
+    """(lineas, gb, origen de la llave). Pedidos abiertos de todo el historial."""
+    arti_ = None
+    if any(c not in mapa_d for c in CAMPOS_LLAVE):
+        arti_ = _arti_para_llave(conn, tabla_d)
+    sql = sql_transito(mapa_h, tabla_h, mapa_d, tabla_d, tipos(conn, tabla_h), arti_)
+    params = [_param("hoy", "DATE", date.today())]
+    df, gb = ejecutar(conn, sql, params, max_gb)
+    return df.reset_index(drop=True), gb, (arti_[0] if arti_ else None)
 
 
 def ped_detail(conn: Conexion, mapa_d: dict, tabla_d: str, desde: date, hasta: date,

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import traceback
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 
 import pandas as pd
 import streamlit as st
@@ -98,23 +98,35 @@ def _guardar(source: str, frame: pd.DataFrame, notas: list[str],
     st.session_state["reports"][source] = validate_source(source, frame)
 
 
-def _resumen_estados(cab: pd.DataFrame) -> str | None:
-    """Que valores de estado llegaron, para confirmar cuales son Aprobado/Despachado."""
-    if "estado" not in cab.columns or cab.empty:
-        return None
-    cuenta = cab["estado"].astype("string").fillna("(vacio)").value_counts().head(8)
-    partes = [f"{k}: {v:,}".replace(",", " ") for k, v in cuenta.items()]
-    return "Estados de pedido encontrados · " + " · ".join(partes)
+def _guardar_pedidos(lineas: pd.DataFrame, arti: str | None, hoy: date) -> None:
+    """Las lineas en camino, en el formato de la Evolucion y del Detallado."""
+    from .transform import estado_canonico
 
+    cab = lineas.drop_duplicates("nro_pedido")[["nro_pedido", "estado", "tipo_pedido"]]
+    pedidos = cab["estado"].map(estado_canonico).fillna("(sin estado)").value_counts()
+    resumen = " · ".join(f"{k} {v:,}".replace(",", " ") for k, v in pedidos.items())
+    notas_cab = [f"Pedidos en camino al {hoy:%d/%m/%Y}: {len(cab):,} ({resumen}).".replace(
+        ",", " "),
+        "Mismo criterio que Forus IQ: Aprobado, en Picking y Documentado de cualquier "
+        "fecha; en Transporte y Prerecepcionado de los ultimos 15 dias; sin lo ya "
+        "recepcionado; solo Reposicion, Llenado de canal y Traspaso entre tiendas."]
+    _guardar(C.SRC_EVOLUCION, bq.a_formato_evolucion(cab), notas_cab, hoy, hoy)
 
-DIAS_PEDIDOS = 60
-
-
-def periodo_pedidos(desde: date, hasta: date) -> tuple[date, date]:
-    """Siempre hasta hoy, y al menos los ultimos N dias de pedidos."""
-    hoy = date.today()
-    dias = int(st.session_state.get("bq_dias_pedidos", DIAS_PEDIDOS))
-    return min(desde, hoy - timedelta(days=dias - 1)), max(hasta, hoy)
+    detallado = bq.a_formato_detallado(lineas.drop(columns=["estado", "tipo_pedido"]))
+    notas_det = [f"{len(detallado):,} lineas en camino · ".replace(",", " ") +
+                 f"{detallado['Unid. Pedidas'].sum():,.0f} unidades pedidas.".replace(",", " ")]
+    sin_llave = detallado["LLAVE"].astype("string").str.fullmatch(r"-*-").fillna(True)
+    if arti:
+        notas_det.append(f"Modelo, color y talla tomados del maestro `{arti.split('.')[-1]}`.")
+    if sin_llave.all():
+        notas_det.append(
+            "El detalle no trae modelo, color ni talla y no encontre el maestro de "
+            "productos (ARTI): la LLAVE queda vacia. Configura `product_master_table` "
+            "en los secrets.")
+    elif sin_llave.any():
+        notas_det.append(f"{int(sin_llave.sum()):,} lineas sin modelo en el maestro: "
+                         "no cruzan con la tabla.".replace(",", " "))
+    _guardar(C.SRC_DETALLADO, detallado, notas_det, hoy, hoy)
 
 
 def traer(conn, prep: dict[str, Fuente], desde: date, hasta: date,
@@ -150,43 +162,22 @@ def traer(conn, prep: dict[str, Fuente], desde: date, hasta: date,
         except Exception as exc:
             fallo("Venta", exc)
 
-    # Los pedidos no se acotan al periodo de venta: para la REP importa lo que
-    # sigue en camino HOY, aunque se haya pedido semanas antes.
-    desde_p, hasta_p = periodo_pedidos(desde, hasta)
-    desde, hasta = desde_p, hasta_p
-    periodo = f"del {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}"
+    # Pedidos: igual que Forus IQ, todos los que siguen abiertos hacia las
+    # tiendas, sin periodo. Un pedido de hace semanas que no llega sigue en camino.
     h, d = prep["ped_header"], prep["ped_detail"]
     if h.lista and d.lista:
         try:
-            with st.spinner("Trayendo la Evolucion y el Detallado…"):
-                cab, gb1 = bq.ped_header(conn, h.mapa, h.tabla, desde, hasta, max_gb)
-                det, gb2 = bq.ped_detail(conn, d.mapa, d.tabla, desde, hasta,
-                                         h.mapa, h.tabla, max_gb)
-            gb_total += gb1 + gb2
-            if not len(cab):
-                explicar_vacio(conn, h.tabla, h.mapa, desde, hasta, "cabecera")
-                avisos.append(("warn", "Los pedidos vinieron vacios",
-                               "Mira el aviso de arriba: dice en que fechas si hay datos."))
-            elif not len(det):
-                avisos.append(("warn", "El Detallado vino vacio",
-                               f"La cabecera trajo {len(cab):,} pedidos pero el detalle "
-                               "ninguna linea: el numero de pedido no cruza entre las "
-                               "dos tablas.".replace(",", " ")))
+            with st.spinner("Trayendo los pedidos en camino…"):
+                lineas, gb, arti = bq.transito(conn, h.mapa, h.tabla, d.mapa, d.tabla,
+                                               max_gb)
+            gb_total += gb
+            hoy = date.today()
+            if not len(lineas):
+                avisos.append(("info", "No hay pedidos en camino",
+                               "Ningun pedido abierto (Aprobado, en Picking, Documentado, "
+                               "o en Transporte de los ultimos 15 dias) hacia las tiendas."))
             else:
-                notas_cab = [f"Cabecera de pedidos traida de BigQuery {periodo}."]
-                estados = _resumen_estados(cab)
-                if estados:
-                    notas_cab.append(estados)
-                _guardar(C.SRC_EVOLUCION, bq.a_formato_evolucion(cab), notas_cab,
-                         desde, hasta)
-                detallado = bq.a_formato_detallado(det)
-                notas_det = [f"Detalle de pedidos traido de BigQuery {periodo}."]
-                if detallado["LLAVE"].astype("string").str.fullmatch(r"-*-").all():
-                    notas_det.append(
-                        "El detalle no trae modelo, color ni talla y no se pudo "
-                        "completar con el maestro de productos: la LLAVE queda vacia. "
-                        "Configura `product_master_table` en los secrets.")
-                _guardar(C.SRC_DETALLADO, detallado, notas_det, desde, hasta)
+                _guardar_pedidos(lineas, arti, hoy)
         except Exception as exc:
             fallo("Pedidos", exc)
 
@@ -215,12 +206,6 @@ def _estado_chips(prep: dict[str, Fuente]) -> None:
 
 def _ajustes(conn, prep: dict[str, Fuente]) -> None:
     """Lo tecnico, fuera del camino: que tabla se usa y que columna es cada campo."""
-    st.session_state["bq_dias_pedidos"] = st.number_input(
-        "Dias de pedidos hacia atras (hasta hoy)", 7, 365,
-        int(st.session_state.get("bq_dias_pedidos", DIAS_PEDIDOS)), step=7,
-        key="bq_dias_ped_in",
-        help="Se traen los pedidos de estos ultimos dias, sea cual sea el periodo de "
-             "venta, para no perder pedidos antiguos que siguen en camino.")
     for f in prep.values():
         st.markdown(f"**{f.etiqueta}** · `{f.tabla or 'sin tabla'}`")
         antes = bq.tabla_configurada(f.tabla) if f.tabla else f.tabla
@@ -283,16 +268,14 @@ def render() -> None:
                       ". Elige la columna en 'Ajustes de tablas y columnas' (abajo).")
 
     desde, hasta, max_gb = selector_periodo("todo", "Periodo de venta")
-    d_p, h_p = periodo_pedidos(desde, hasta)
-    st.caption(f"Pedidos: del **{d_p:%d/%m/%Y}** al **{h_p:%d/%m/%Y}** (hoy incluido), "
-               "para que la REP cuente todo lo que sigue en camino. Se cambia en "
-               "'Ajustes de tablas y columnas'.")
+    st.caption("Pedidos: todos los que siguen en camino hoy, sin importar la fecha "
+               "(mismo criterio que Forus IQ). Se suman al STK de cada tienda.")
 
     partes = []
     if prep["ventas"].lista:
         partes.append("venta")
     if prep["ped_header"].lista and prep["ped_detail"].lista:
-        partes.append("pedidos (Evolucion y Detallado)")
+        partes.append("pedidos en camino")
     texto = ("Traer " + " y ".join(partes)) if partes else "Nada listo para traer"
     if st.button(texto, type="primary", width="stretch", key="bq_traer_todo",
                  disabled=not partes):
